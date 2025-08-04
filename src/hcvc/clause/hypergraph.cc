@@ -350,231 +350,172 @@ void HyperGraph::transform_subtraction_loops(Context &context, Module* owner) {
 }
 
 
-// This is the final, corrected version.
-// Replace your existing function with this one.
+
 void HyperGraph::transform_linear_combination_loops(Context &context, Module* owner) {
-    auto loops_to_transform = find_linear_combination_loops(owner);
-    if (loops_to_transform.empty()) {
-        return;
+    // Phase 1: Analysis - Find loops that require transformation and create a plan.
+    auto all_loops = find_linear_combination_loops(owner);
+    if (all_loops.empty()) {
+        return; // No loops with negative terms were found. Nothing to do.
     }
 
-    struct LoopTransformInfo {
-        Predicate* new_predicate;
-        std::vector<Variable*> initial_vars;
-        std::vector<std::vector<Variable*>> accumulator_vars_per_sum;
-        const LinearCombinationLoop* loop_details;
+    struct TransformPlan {
+        Predicate* new_predicate = nullptr;
+        std::vector<Variable*> accumulators; 
+        const LinearCombinationLoop* loop_info = nullptr;
     };
+    std::map<const Predicate*, TransformPlan> transform_plans;
 
-    std::map<const Predicate*, LoopTransformInfo> transform_plan;
-
-    // STEP 1: Pre-computation
-    for (size_t i = 0; i < loops_to_transform.size(); ++i) {
-        const auto& loop = loops_to_transform[i];
-        
-        LoopTransformInfo info;
-        info.loop_details = &loop;
-        
-        // Create new variables for this loop
+    for (const auto& loop : all_loops) {
+        if (transform_plans.count(loop.loop_predicate)) continue;
+        TransformPlan plan;
+        plan.loop_info = &loop;
         for (const auto& sum_update : loop.sum_updates) {
-            std::string initial_var_name = sum_update.sum_var->name() + "_initial_" + std::to_string(i);
-            auto initial_var = new Variable(initial_var_name, sum_update.sum_var->type(), owner->context());
-            initial_var->set_is_data(); 
-            info.initial_vars.push_back(initial_var);
-            
-            std::vector<Variable*> acc_vars_for_sum;
-            for (size_t term_idx = 0; term_idx < sum_update.terms.size(); ++term_idx) {
-                std::string acc_name = "acc_" + sum_update.sum_var->name() + "_" + std::to_string(term_idx) + "_" + std::to_string(i);
-                auto acc_var = new Variable(acc_name, sum_update.sum_var->type(), owner->context());
-                acc_var->set_is_data();
-                acc_vars_for_sum.push_back(acc_var);
-            }
-            info.accumulator_vars_per_sum.push_back(acc_vars_for_sum);
+            std::string acc_name = "acc_" + sum_update.sum_var->name() + "_" + loop.loop_predicate->name();
+            auto acc_var = new Variable(acc_name, sum_update.sum_var->type(), owner->context());
+            acc_var->set_is_data();
+            plan.accumulators.push_back(acc_var);
         }
-
-        // Create the new predicate
         auto new_params = loop.loop_predicate->parameters();
-        for (auto initial_var : info.initial_vars) { new_params.push_back(initial_var); }
-        for (const auto& acc_vars : info.accumulator_vars_per_sum) {
-            for (auto acc_var : acc_vars) { new_params.push_back(acc_var); }
-        }
-        info.new_predicate = InvariantPredicate::create(loop.owner_function, loop.loop_predicate->name(), new_params);
-
-        transform_plan[loop.loop_predicate] = info;
+        for (auto acc_var : plan.accumulators) { new_params.push_back(acc_var); }
+        plan.new_predicate = InvariantPredicate::create(loop.owner_function, loop.loop_predicate->name(), new_params);
+        transform_plans[loop.loop_predicate] = plan;
     }
-
     
-    std::set<const Clause*> clauses_to_remove;
-    std::vector<const Clause*> clauses_to_add;
-    std::map<const Clause*, const Clause*> new_to_old_map;
-    std::set<const Clause*> processed_clauses;
+    // Phase 2: Clause Rewriting - Build a new, transformed set of clauses on the side.
+    std::vector<const Clause*> final_clauses;
+    std::map<const Clause*, std::set<Weakness>> clause_weakness_map;
 
-    for (const auto& loop : loops_to_transform) {
-        const auto& current_plan = transform_plan.at(loop.loop_predicate);
-
-        std::vector<const Clause*> all_clauses_for_this_loop;
-        if (loop.entry_clause) all_clauses_for_this_loop.push_back(loop.entry_clause);
-        all_clauses_for_this_loop.push_back(loop.inductive_clause);
-        if (_antecedency.count(loop.loop_predicate)) {
-            for (const auto* c : _antecedency.at(loop.loop_predicate)) {
-                if (c != loop.inductive_clause) {
-                    all_clauses_for_this_loop.push_back(c);
-                }
-            }
-        }
+    for (const auto* clause : this->to_set()) {
+        const Clause* new_clause = clause;
         
-        for (const auto* clause : all_clauses_for_this_loop) {
-            if (processed_clauses.count(clause)) {
-                continue;
+        bool is_involved = false;
+        for(const auto& app_expr : clause->antecedent_preds()) {
+            auto app = std::dynamic_pointer_cast<PredicateApplication>(app_expr);
+            if (app && transform_plans.count(app->predicate())) { is_involved = true; break; }
+        }
+        if (!is_involved && clause->consequent()) {
+            auto app = std::dynamic_pointer_cast<PredicateApplication>(*clause->consequent());
+            if (app && transform_plans.count(app->predicate())) { is_involved = true; }
+        }
+
+        if (is_involved) {
+            auto new_antecedents = clause->antecedent_preds();
+            auto new_phi = clause->phi();
+            auto new_consequent = clause->consequent();
+
+            // --- Step 1: Transform Antecedent(s) if necessary (Exit/Helper logic) ---
+            Predicate* antecedent_pred_to_transform = nullptr;
+            for(const auto& app_expr : new_antecedents) {
+                auto app = std::dynamic_pointer_cast<PredicateApplication>(app_expr);
+                if (app && transform_plans.count(app->predicate())) {
+                    antecedent_pred_to_transform = app->predicate();
+                    break;
+                }
             }
-            processed_clauses.insert(clause);
-            clauses_to_remove.insert(clause);
+
+            if (antecedent_pred_to_transform) {
+                const auto& ant_plan = transform_plans.at(antecedent_pred_to_transform);
+                std::map<Expr, Expr> complete_sub_map;
+                for(const auto& app_expr : new_antecedents) {
+                    auto ant_app = std::dynamic_pointer_cast<PredicateApplication>(app_expr);
+                    if(ant_app && ant_app->predicate() == antecedent_pred_to_transform) {
+                        for (size_t j = 0; j < ant_plan.loop_info->sum_updates.size(); ++j) {
+                            const auto& sum_update = ant_plan.loop_info->sum_updates[j];
+                            auto accumulator_var = ant_plan.accumulators[j];
+                            auto acc_at_exit = VariableConstant::create(accumulator_var, 0, context);
+                            auto s_at_exit = ant_app->arguments()[sum_update.sum_var_arg_idx];
+                            complete_sub_map[s_at_exit] = context.apply("-", {s_at_exit, acc_at_exit});
+                        }
+                    }
+                }
+                for (size_t k = 0; k < new_phi.size(); ++k) new_phi[k] = substitute(new_phi[k], complete_sub_map);
+                if (new_consequent.has_value()) new_consequent = substitute(new_consequent.value(), complete_sub_map);
+                for (size_t k=0; k < new_antecedents.size(); ++k) {
+                    auto app_to_modify = std::dynamic_pointer_cast<PredicateApplication>(new_antecedents[k]);
+                     if(app_to_modify && app_to_modify->predicate() == antecedent_pred_to_transform) {
+                        auto args = app_to_modify->arguments(); 
+                        for (auto acc_var : ant_plan.accumulators) args.push_back(VariableConstant::create(acc_var, 0, context));
+                        new_antecedents[k] = std::make_shared<PredicateApplication>(ant_plan.new_predicate, args, context);
+                     }
+                }
+            }
             
-            bool is_entry = (clause == loop.entry_clause);
-            bool is_inductive = (clause == loop.inductive_clause);
+            // --- Step 2: Transform Consequent if necessary (Entry/Inductive logic) ---
+            auto cons_app = new_consequent ? std::dynamic_pointer_cast<PredicateApplication>(*new_consequent) : nullptr;
+            if (cons_app && transform_plans.count(cons_app->predicate())) {
+                const auto& cons_plan = transform_plans.at(cons_app->predicate());
+                
+                bool is_inductive_for_consequent = false;
+                for(const auto& ant_expr : clause->antecedent_preds()) {
+                    auto ant_app = std::dynamic_pointer_cast<PredicateApplication>(ant_expr);
+                    if (ant_app && ant_app->predicate() == cons_app->predicate()) {
+                        is_inductive_for_consequent = true;
+                        break;
+                    }
+                }
 
-            if (is_entry) {
-                auto cons_app = std::dynamic_pointer_cast<PredicateApplication>(*clause->consequent());
-                auto new_phi = clause->phi();
-                for (size_t sum_idx = 0; sum_idx < loop.sum_updates.size(); ++sum_idx) {
-                    auto initial_var = current_plan.initial_vars[sum_idx];
-                    auto initial_vc = VariableConstant::create(initial_var, 0, context);
-                    auto sum_value = cons_app->arguments()[loop.sum_updates[sum_idx].sum_var_arg_idx];
-                    new_phi.push_back(initial_vc == sum_value);
-                }
-                for (const auto& acc_vars : current_plan.accumulator_vars_per_sum) {
-                    for (auto acc_var : acc_vars) {
-                        auto acc_vc = VariableConstant::create(acc_var, 0, context);
-                        auto zero = IntegerLiteral::get("0", acc_var->type(), context);
-                        new_phi.push_back(acc_vc == zero);
+                if (is_inductive_for_consequent) { // Recipe B
+                    const auto& sum_update = cons_plan.loop_info->sum_updates[0];
+                    std::vector<Expr> temp_phi;
+                    for(const auto& constraint : new_phi){
+                        auto eq_op = std::dynamic_pointer_cast<OperatorApplication>(constraint);
+                        bool is_our_update_rule = false;
+                        if(eq_op.get() != nullptr && eq_op->arguments().size() > 0){
+                           auto vc_lhs = std::dynamic_pointer_cast<VariableConstant>(eq_op->arguments()[0]);
+                           if(vc_lhs.get() != nullptr && vc_lhs->variable() == sum_update.sum_var) is_our_update_rule = true;
+                        }
+                        if(!is_our_update_rule) temp_phi.push_back(constraint);
                     }
-                }
-                auto new_args = cons_app->arguments();
-                for (auto iv : current_plan.initial_vars) new_args.push_back(VariableConstant::create(iv, 0, context));
-                for (const auto& av_list : current_plan.accumulator_vars_per_sum) { for(auto av : av_list) new_args.push_back(VariableConstant::create(av, 0, context)); }
-                auto new_cons = std::make_shared<PredicateApplication>(current_plan.new_predicate, new_args, context);
-                auto new_clause = new Clause(clause->antecedent_preds(), new_phi, new_cons, context);
-                clauses_to_add.push_back(new_clause);
-                new_to_old_map[new_clause] = clause;
+                    new_phi = temp_phi;
+                    
+                    std::vector<Expr> pos, neg;
+                    for(const auto& t : sum_update.terms) if(t.is_positive) pos.push_back(t.variable); else neg.push_back(t.variable);
+                    Expr s_rhs = sum_update.sum_old_expr; for(const auto& p:pos) s_rhs = context.apply("+",{s_rhs,p});
+                    new_phi.push_back(context.apply("=", {sum_update.sum_new_expr, s_rhs}));
+                    
+                    auto acc_old = VariableConstant::create(cons_plan.accumulators[0], 0, context);
+                    auto acc_new = VariableConstant::create(cons_plan.accumulators[0], 1, context);
+                    Expr acc_rhs = acc_old; for(const auto& n:neg) acc_rhs = context.apply("+",{acc_rhs,n});
+                    new_phi.push_back(context.apply("=", {acc_new, acc_rhs}));
 
-            } else if (is_inductive) {
-                auto ant_app = std::dynamic_pointer_cast<PredicateApplication>(clause->antecedent_preds()[0]);
-                auto cons_app = std::dynamic_pointer_cast<PredicateApplication>(*clause->consequent());
-                auto ant_args = ant_app->arguments();
-                for (auto iv : current_plan.initial_vars) ant_args.push_back(VariableConstant::create(iv, 0, context));
-                for (const auto& av_list : current_plan.accumulator_vars_per_sum) { for(auto av : av_list) ant_args.push_back(VariableConstant::create(av, 0, context)); }
-                auto new_ant = std::make_shared<PredicateApplication>(current_plan.new_predicate, ant_args, context);
-                std::vector<Expr> new_phi;
-                for (const auto& constraint : clause->phi()) {
-                    auto eq_op = std::dynamic_pointer_cast<OperatorApplication>(constraint);
-                    bool is_sum_update = false;
-                    if (eq_op && eq_op->operat0r()->name() == "=" && eq_op->arguments().size() == 2 && eq_op->arguments()[0]->kind() == TermKind::Constant) {
-                        auto vc_lhs = std::dynamic_pointer_cast<VariableConstant>(eq_op->arguments()[0]);
-                        if (vc_lhs) { for (const auto& su : loop.sum_updates) { if (vc_lhs->variable() == su.sum_var) is_sum_update = true; } }
-                    }
-                    if (!is_sum_update) new_phi.push_back(constraint);
-                }
-                for (size_t s_idx=0; s_idx < loop.sum_updates.size(); ++s_idx) {
-                    for (size_t t_idx=0; t_idx < loop.sum_updates[s_idx].terms.size(); ++t_idx) {
-                        auto acc_var = current_plan.accumulator_vars_per_sum[s_idx][t_idx];
-                        new_phi.push_back(VariableConstant::create(acc_var, 1, context) == context.apply("+", {VariableConstant::create(acc_var, 0, context), loop.sum_updates[s_idx].terms[t_idx].variable}));
-                    }
-                    Expr recomp = VariableConstant::create(current_plan.initial_vars[s_idx], 0, context);
-                    for (size_t t_idx=0; t_idx < loop.sum_updates[s_idx].terms.size(); ++t_idx) {
-                        const auto& term = loop.sum_updates[s_idx].terms[t_idx];
-                        auto acc_new_vc = VariableConstant::create(current_plan.accumulator_vars_per_sum[s_idx][t_idx], 1, context);
-                        recomp = context.apply(term.is_positive ? "+" : "-", {recomp, acc_new_vc});
-                    }
-                    new_phi.push_back(VariableConstant::create(loop.sum_updates[s_idx].sum_var, 1, context) == recomp);
-                }
-                auto cons_args = cons_app->arguments();
-                for (auto iv : current_plan.initial_vars) cons_args.push_back(VariableConstant::create(iv, 0, context));
-                for (size_t s_idx=0; s_idx < current_plan.accumulator_vars_per_sum.size(); ++s_idx) {
-                    for (size_t t_idx=0; t_idx < current_plan.accumulator_vars_per_sum[s_idx].size(); ++t_idx) {
-                        cons_args.push_back(VariableConstant::create(current_plan.accumulator_vars_per_sum[s_idx][t_idx], 1, context));
-                    }
-                }
-                auto new_cons = std::make_shared<PredicateApplication>(current_plan.new_predicate, cons_args, context);
-                auto new_clause = new Clause({new_ant}, new_phi, new_cons, context);
-                clauses_to_add.push_back(new_clause);
-                new_to_old_map[new_clause] = clause;
+                    auto cons_args = cons_app->arguments();
+                    cons_args.push_back(acc_new);
+                    new_consequent = std::make_shared<PredicateApplication>(cons_plan.new_predicate, cons_args, context);
 
-            } else {
-                std::vector<Expr> new_antecedents;
-                auto new_phi = clause->phi();
-                for (const auto& ant_expr : clause->antecedent_preds()) {
-                    auto pred_app = std::dynamic_pointer_cast<PredicateApplication>(ant_expr);
-                    if (pred_app && pred_app->predicate() == loop.loop_predicate) {
-                        auto ant_args = pred_app->arguments();
-                        for (auto iv : current_plan.initial_vars) ant_args.push_back(VariableConstant::create(iv, 0, context));
-                        for (const auto& av_list : current_plan.accumulator_vars_per_sum) { for(auto av : av_list) ant_args.push_back(VariableConstant::create(av, 0, context)); }
-                        new_antecedents.push_back(std::make_shared<PredicateApplication>(current_plan.new_predicate, ant_args, context));
-                        for (size_t s_idx=0; s_idx < loop.sum_updates.size(); ++s_idx) {
-                            auto s_value = pred_app->arguments()[loop.sum_updates[s_idx].sum_var_arg_idx];
-                            Expr expected = VariableConstant::create(current_plan.initial_vars[s_idx], 0, context);
-                             for (size_t t_idx=0; t_idx < loop.sum_updates[s_idx].terms.size(); ++t_idx) {
-                                const auto& term = loop.sum_updates[s_idx].terms[t_idx];
-                                auto acc_vc = VariableConstant::create(current_plan.accumulator_vars_per_sum[s_idx][t_idx], 0, context);
-                                expected = context.apply(term.is_positive ? "+" : "-", {expected, acc_vc});
-                            }
-                            new_phi.push_back(s_value == expected);
-                        }
-                    } else {
-                        new_antecedents.push_back(ant_expr);
+                } else { // Recipe A
+                    for (auto acc_var : cons_plan.accumulators) {
+                        auto acc_init = VariableConstant::create(acc_var, 0, context);
+                        new_phi.push_back(context.apply("=", {acc_init, IntegerLiteral::get("0", acc_var->type(), context)}));
                     }
+                    auto args = cons_app->arguments();
+                    for (auto acc_var : cons_plan.accumulators) args.push_back(VariableConstant::create(acc_var, 0, context));
+                    new_consequent = std::make_shared<PredicateApplication>(cons_plan.new_predicate, args, context);
                 }
-                auto new_consequent = clause->consequent();
-                if (clause->consequent()) {
-                    auto cons_app = std::dynamic_pointer_cast<PredicateApplication>(*clause->consequent());
-                    if (cons_app && transform_plan.count(cons_app->predicate())) {
-                        const auto& target_plan = transform_plan.at(cons_app->predicate());
-                        for (size_t s_idx = 0; s_idx < target_plan.loop_details->sum_updates.size(); ++s_idx) {
-                            auto initial_var = target_plan.initial_vars[s_idx];
-                            auto initial_vc = VariableConstant::create(initial_var, 0, context);
-                            auto sum_value = cons_app->arguments()[target_plan.loop_details->sum_updates[s_idx].sum_var_arg_idx];
-                            new_phi.push_back(initial_vc == sum_value);
-                        }
-                        for (const auto& acc_vars : target_plan.accumulator_vars_per_sum) {
-                            for (auto acc_var : acc_vars) {
-                                auto acc_vc = VariableConstant::create(acc_var, 0, context);
-                                new_phi.push_back(acc_vc == IntegerLiteral::get("0", acc_var->type(), context));
-                            }
-                        }
-                        auto new_cons_args = cons_app->arguments();
-                        for (auto iv : target_plan.initial_vars) new_cons_args.push_back(VariableConstant::create(iv, 0, context));
-                        for (const auto& av_list : target_plan.accumulator_vars_per_sum) { for(auto av : av_list) new_cons_args.push_back(VariableConstant::create(av, 0, context)); }
-                        new_consequent = std::make_shared<PredicateApplication>(target_plan.new_predicate, new_cons_args, context);
-                    }
-                }
-                auto new_clause = new Clause(new_antecedents, new_phi, new_consequent, context);
-                clauses_to_add.push_back(new_clause);
-                new_to_old_map[new_clause] = clause;
+            }
+
+            new_clause = new Clause(new_antecedents, new_phi, new_consequent, context);
+        }
+
+        final_clauses.push_back(new_clause);
+        for (auto const& [weakness, clauses_with_weakness] : _weakness_clause_map) {
+            if (clauses_with_weakness.count(clause)) {
+                clause_weakness_map[new_clause].insert(weakness);
             }
         }
     }
 
-    for (auto clause : clauses_to_remove) { this->erase(clause); }
-    for (auto new_clause : clauses_to_add) {
-        const auto* old_clause = new_to_old_map.count(new_clause) ? new_to_old_map.at(new_clause) : nullptr;
-        bool was_tagged = false;
-        if (old_clause) {
-            for (auto const& [weakness, clauses] : _weakness_clause_map) {
-                if (clauses.count(old_clause)) {
-                    this->add(new_clause, weakness);
-                    was_tagged = true;
-                }
-            }
-        }
-        if (!was_tagged) { this->add(new_clause); }
-    }
-    
-    // Rebuild internal structures
-    auto current_clauses = this->to_set();
+    // Phase 3: Atomically rebuild the entire hypergraph.
     _clauses.clear(); _init_clauses.clear(); _ind_clauses.clear(); _goal_clauses.clear();
-    _antecedency.clear(); _consequency.clear();
-    for (auto clause : current_clauses) {
-        this->add(clause);
+    _antecedency.clear(); _consequency.clear(); _weakness_clause_map.clear();
+    for (const auto* cl : final_clauses) {
+        if (clause_weakness_map.count(cl)) {
+            for (const auto& weakness : clause_weakness_map.at(cl)) this->add(cl, weakness);
+        } else {
+            this->add(cl);
+        }
     }
 }
+
 class LinearExpressionParser {
 private:
     Context& context;
