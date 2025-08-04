@@ -54,6 +54,9 @@ namespace hcvc {
       return nullptr;
     }
 
+      Function* get_function_owner(const Predicate* p) const;
+      Context& context(); // Add a getter for the context
+
   private:
     Context &_context;
     std::map<std::string, Function *> _functions;

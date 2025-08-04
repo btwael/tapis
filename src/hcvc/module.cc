@@ -16,5 +16,18 @@ namespace hcvc {
       delete func;
     }
   }
+// ... inside the hcvc namespace ...
 
+Function* Module::get_function_owner(const Predicate* p) const {
+    for (auto const& [name, func] : _functions) {
+        if (func->has_predicate(p->name())) {
+            return func;
+        }
+    }
+    return nullptr;
+}
+
+Context& Module::context() {
+  return _context;
+}
 }

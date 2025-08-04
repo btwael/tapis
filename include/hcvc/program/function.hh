@@ -105,6 +105,9 @@ namespace hcvc {
     static Function *
     create(std::string name, std::vector<Parameter *> parameters, const Type *returnType, Module *module);
 
+    bool has_predicate(const std::string& name) const;
+      Variable* find_local_variable(const std::string& name) const;
+
   private:
     std::string _name;
     std::vector<Parameter *> _parameters;

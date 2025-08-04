@@ -1,23 +1,24 @@
-// sum_safe_final.c
 
-void assume_exp(const char *);
+void assume(int);
 void assert_exp(const char *);
 
 int main() {
-  int a[10];
-  int x;
 
-  // Assume 'x' holds the sum of the first 4 elements.
-  // x = sum(a, 0, 4)
-  assume_exp("(= x (sum a 0 4))");
+int N;
+assume(N > 0);
+int a[N], b[N];
+int s = 0;
 
-  // Update x with the 5th element.
-  // x's new value is sum(a, 0, 4) + a[4]
-  // Assert an INCORRECT state.
-  // This asserts that (sum(a, 0, 4) + a[4]) == sum(a, 0, 4),
-  // which is only true if a[4] is 0. Since this is not always true,
-  // the program is unsafe.
-  assert_exp("(= x (sum a 0 4))");
+int s_initial = s;
+int acc_s_0 = 0; int acc_s_1 = 0;
+int i;
 
+for (i = 0; i < N; i++) {
+    acc_s_0 = acc_s_0 + a[i];
+    acc_s_1 = acc_s_1 + b[i];
+    s = s_initial + acc_s_0 - acc_s_1;
+}
+
+assert(s == 0);
   return 0;
 }

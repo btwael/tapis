@@ -927,7 +927,7 @@ if (auto *expr = clang::dyn_cast<clang::Expr>(stmt)) {
         compile(function);
       }
 
-      _module->hypergraph().simplify(_context);
+      _module->hypergraph().simplify(_context, _module);
       // return the populated module
       return _module;
     }

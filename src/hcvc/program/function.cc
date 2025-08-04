@@ -41,5 +41,9 @@ namespace hcvc {
   Function::create(std::string name, std::vector<Parameter *> parameters, const Type *returnType, Module *module) {
     return new Function(std::move(name), std::move(parameters), returnType, module);
   }
+bool Function::has_predicate(const std::string &name) const {
+    // Correctly access the map of predicates from the owning module
+    return _module->_predicates.count(name) > 0;
+}
 
 }
