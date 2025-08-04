@@ -945,40 +945,18 @@ public:
 std::vector<HyperGraph::LinearCombinationLoop> HyperGraph::find_linear_combination_loops(Module* owner) const {
     std::vector<HyperGraph::LinearCombinationLoop> results;
     LinearExpressionParser parser(owner->context());
-    IteratorVariableDetector iterator_detector;  // ADD THIS DECLARATION
+    IteratorVariableDetector iterator_detector;
     
     for (const auto* ind_clause : _ind_clauses) {
-        // ADD THIS DEBUG BLOCK
-        std::cout << "=== DEBUGGING CLAUSE ===" << std::endl;
-        std::cout << "Clause: ";
-        ind_clause->dump();
-        std::cout << "\nPhi constraints:" << std::endl;
-        for (size_t c = 0; c < ind_clause->phi().size(); ++c) {
-            std::cout << "  Constraint " << c << ": ";
-            std::cout << "Kind=" << (int)ind_clause->phi()[c]->kind() << " ";
-            
-            auto eq_op = std::dynamic_pointer_cast<OperatorApplication>(ind_clause->phi()[c]);
-            if (eq_op) {
-                std::cout << "Op=" << eq_op->operat0r()->name() << " ";
-                std::cout << "Args=" << eq_op->arguments().size() << " ";
-                if (eq_op->arguments().size() >= 2) {
-                    std::cout << "LHS_kind=" << (int)eq_op->arguments()[0]->kind() << " ";
-                    std::cout << "RHS_kind=" << (int)eq_op->arguments()[1]->kind() << " ";
-                }
-            }
-            std::cout << std::endl;
-        }
-        std::cout << "=========================" << std::endl;
-        
         HyperGraph::LinearCombinationLoop loop;
         loop.inductive_clause = ind_clause;
         
-        // Basic validation - same as before
         if (ind_clause->antecedent_preds().empty() || !ind_clause->consequent()) continue;
         
         auto antecedent_pred_app = std::dynamic_pointer_cast<PredicateApplication>(ind_clause->antecedent_preds().at(0));
         auto consequent_pred_app = std::dynamic_pointer_cast<PredicateApplication>(*ind_clause->consequent());
         
+        // --- FIX 1: Explicit null checks ---
         if (antecedent_pred_app.get() == nullptr || consequent_pred_app.get() == nullptr || 
             antecedent_pred_app->predicate() != consequent_pred_app->predicate()) continue;
             
@@ -986,70 +964,64 @@ std::vector<HyperGraph::LinearCombinationLoop> HyperGraph::find_linear_combinati
         loop.owner_function = owner->get_function_owner(loop.loop_predicate);
         if (loop.owner_function == nullptr) continue;
         
-        // Enhanced pattern detection for linear combinations
         for (const auto& constraint : ind_clause->phi()) {
             auto eq_op = std::dynamic_pointer_cast<OperatorApplication>(constraint);
+            // --- FIX 2: Explicit null check ---
             if (eq_op.get() == nullptr || eq_op->operat0r()->name() != "=" || eq_op->arguments().size() != 2) continue;
             
-            auto lhs = eq_op->arguments()[0]; // s_new
-            auto rhs = eq_op->arguments()[1]; // s_old + linear_combination
+            auto lhs = eq_op->arguments()[0];
+            auto rhs = eq_op->arguments()[1];
             
-            // ADD THIS DEBUG
-            std::cout << "  Trying to parse constraint with LHS_kind=" << (int)lhs->kind() 
-                     << " RHS_kind=" << (int)rhs->kind() << std::endl;
-            
-            // Try to parse as linear combination update
             auto [sum_old_expr, terms] = parser.parseUpdate(rhs, lhs);
             
-            std::cout << "  Parse result: sum_old_expr=" << (sum_old_expr.get() != nullptr ? "found" : "null") 
-                     << " terms=" << terms.size() << std::endl;
-            
             if (sum_old_expr && !terms.empty()) {
-                // Validate that lhs and sum_old_expr refer to same variable with different indices
-                if (lhs->kind() == TermKind::Constant && sum_old_expr->kind() == TermKind::Constant) {
-                    auto vc_new = std::dynamic_pointer_cast<VariableConstant>(lhs);
-                    auto vc_old = std::dynamic_pointer_cast<VariableConstant>(sum_old_expr);
+                auto vc_new = std::dynamic_pointer_cast<VariableConstant>(lhs);
+                auto vc_old = std::dynamic_pointer_cast<VariableConstant>(sum_old_expr);
+                
+                // --- FIX 3: Explicit null checks ---
+                if (vc_new.get() != nullptr && vc_old.get() != nullptr && 
+                    vc_new->variable() == vc_old->variable()) {
                     
-                    if (vc_new.get() != nullptr && vc_old.get() != nullptr && 
-                        vc_new->variable() == vc_old->variable()) {
-                        
-                        std::cout << "    Found valid update for variable: " << vc_new->variable()->name() << std::endl;
-                        
-                        // Found a valid linear combination update!
-                        HyperGraph::LinearCombinationLoop::SumUpdate update;
-                        update.sum_var = vc_new->variable();
-                        update.sum_old_expr = sum_old_expr;
-                        update.sum_new_expr = lhs;
-                        update.terms = std::move(terms);
-                        
-                        // Find parameter index
-                        update.sum_var_arg_idx = -1;
-                        for (size_t i = 0; i < loop.loop_predicate->parameters().size(); ++i) {
-                            if (loop.loop_predicate->parameters()[i] == update.sum_var) {
-                                update.sum_var_arg_idx = i;
-                                break;
-                            }
+                    HyperGraph::LinearCombinationLoop::SumUpdate update;
+                    update.sum_var = vc_new->variable();
+                    update.sum_old_expr = sum_old_expr;
+                    update.sum_new_expr = lhs;
+                    update.terms = std::move(terms);
+                    
+                    update.sum_var_arg_idx = -1;
+                    for (size_t i = 0; i < loop.loop_predicate->parameters().size(); ++i) {
+                        if (loop.loop_predicate->parameters()[i] == update.sum_var) {
+                            update.sum_var_arg_idx = i;
+                            break;
                         }
-                        
-                        if (update.sum_var_arg_idx != -1) {
-                            loop.sum_updates.push_back(std::move(update));
-                        }
+                    }
+                    
+                    if (update.sum_var_arg_idx != -1) {
+                        loop.sum_updates.push_back(std::move(update));
                     }
                 }
             }
         }
         
-        // STEP 1: Filter out iterator variables BEFORE final validation
         if (!loop.sum_updates.empty()) {
-            std::cout << "  Before filtering: " << loop.sum_updates.size() << " sum updates" << std::endl;
-            
-            // Filter out iterator variables
             loop.sum_updates = iterator_detector.filterIteratorVariables(loop.sum_updates, ind_clause);
-            
-            std::cout << "  After filtering: " << loop.sum_updates.size() << " sum updates" << std::endl;
         }
         
-        // STEP 2: Find entry and exit clauses - same logic as before
+        if (!loop.sum_updates.empty()) {
+            bool has_negative_terms = false;
+            if (!loop.sum_updates.empty()) {
+                for (const auto& term : loop.sum_updates[0].terms) {
+                    if (!term.is_positive) {
+                        has_negative_terms = true;
+                        break;
+                    }
+                }
+            }
+            if (!has_negative_terms) {
+                loop.sum_updates.clear();
+            }
+        }
+
         loop.entry_clause = nullptr;
         if (_consequency.count(loop.loop_predicate)) {
             for (const auto* c : _consequency.at(loop.loop_predicate)) {
@@ -1070,21 +1042,10 @@ std::vector<HyperGraph::LinearCombinationLoop> HyperGraph::find_linear_combinati
             }
         }
         
-        // STEP 3: Only add to results if we have non-iterator updates AND entry/exit clauses
         if (!loop.sum_updates.empty() && loop.entry_clause && loop.exit_clause) {
-            std::cout << "  ADDING LOOP: " << loop.sum_updates.size() << " non-iterator variables detected" << std::endl;
             results.push_back(std::move(loop));
-        } else if (loop.sum_updates.empty()) {
-            std::cout << "  EXCLUDING LOOP: only iterator variables detected, no accumulation patterns" << std::endl;
-        } else {
-            std::cout << "  EXCLUDING LOOP: missing entry or exit clause" << std::endl;
         }
     }
-
-    if (!results.empty()) {
-    EnhancedLinearCombinationProcessor processor;
-    processor.processDetectedLoops(results);
-}
     
     return results;
 }
