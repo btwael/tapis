@@ -131,223 +131,6 @@ namespace hcvc {
     }
     return new Clause(S_c, phi_c, clause->consequent(), context);
   }
-  std::vector<HyperGraph::SubtractionLoop>
-  HyperGraph::find_subtraction_loops(Module* owner) const {
-      std::vector<SubtractionLoop> results;
-      for (const auto* ind_clause : _ind_clauses) {
-          SubtractionLoop loop;
-          loop.inductive_clause = ind_clause;
-
-          if (ind_clause->antecedent_preds().empty() || !ind_clause->consequent()) continue;
-          auto antecedent_pred_app = std::dynamic_pointer_cast<PredicateApplication>(ind_clause->antecedent_preds().at(0));
-          auto consequent_pred_app = std::dynamic_pointer_cast<PredicateApplication>(*ind_clause->consequent());
-          if (antecedent_pred_app.get() == nullptr || consequent_pred_app.get() == nullptr || antecedent_pred_app->predicate() != consequent_pred_app->predicate()) continue;
-          loop.loop_predicate = antecedent_pred_app->predicate();
-
-          loop.owner_function = owner->get_function_owner(loop.loop_predicate);
-          if (loop.owner_function == nullptr) continue;
-
-          Expr s_old_expr, s_new_expr;
-          for (const auto& constraint : ind_clause->phi()) {
-              auto eq_op = std::dynamic_pointer_cast<OperatorApplication>(constraint);
-              if (eq_op.get() == nullptr || eq_op->operat0r()->name() != "=") continue;
-              auto rhs = eq_op->arguments()[1];
-              if (rhs->kind() != TermKind::OpApp) continue;
-              auto sub_op = std::dynamic_pointer_cast<OperatorApplication>(rhs);
-              if (sub_op.get() == nullptr || sub_op->operat0r()->name() != "-" || sub_op->arguments().size() != 2) continue;
-              s_new_expr = eq_op->arguments()[0];
-              s_old_expr = sub_op->arguments()[0];
-              loop.subtrahend_expr = sub_op->arguments()[1];
-              if (s_new_expr->kind() != TermKind::Constant || s_old_expr->kind() != TermKind::Constant) continue;
-              auto vc_new = std::dynamic_pointer_cast<VariableConstant>(s_new_expr);
-              auto vc_old = std::dynamic_pointer_cast<VariableConstant>(s_old_expr);
-              if (vc_new.get() == nullptr || vc_old.get() == nullptr || vc_new->variable() != vc_old->variable()) continue;
-              loop.sum_var = vc_new->variable();
-              break;
-          }
-          if (loop.sum_var == nullptr) continue;
-
-          loop.sum_var_arg_idx = -1;
-          for (size_t i = 0; i < loop.loop_predicate->parameters().size(); ++i) {
-              if (loop.loop_predicate->parameters()[i] == loop.sum_var) {
-                  loop.sum_var_arg_idx = i;
-                  break;
-              }
-          }
-          if (loop.sum_var_arg_idx == -1) continue;
-
-          loop.entry_clause = nullptr;
-          if (_consequency.count(loop.loop_predicate)) {
-              for (const auto* c : _consequency.at(loop.loop_predicate)) {
-                  if (c != loop.inductive_clause) { loop.entry_clause = c; break; }
-              }
-          }
-
-          loop.exit_clause = nullptr;
-          if (_antecedency.count(loop.loop_predicate)) {
-              for (const auto* c : _antecedency.at(loop.loop_predicate)) {
-                  if (c != loop.inductive_clause) { loop.exit_clause = c; break; }
-              }
-          }
-
-          if (loop.entry_clause && loop.exit_clause) {
-              results.push_back(loop);
-          }
-      }
-      return results;
-  }
-
-void HyperGraph::transform_subtraction_loops(Context &context, Module* owner) {
-
-  transform_linear_combination_loops(context, owner);
-
-
-    auto loops_to_transform = find_subtraction_loops(owner);
-    if (loops_to_transform.empty()) return;
-
-    std::set<const Clause*> clauses_to_remove;
-    std::map<const Clause*, const Clause*> new_to_old_map;
-    std::vector<const Clause*> clauses_to_add;
-
-    for (const auto& loop : loops_to_transform) {
-        auto s_acc_var = new Variable("acc", loop.sum_var->type(), owner->context());
-        s_acc_var->set_is_data(); // data to exclude from bound generation
-
-        
-        auto new_params = loop.loop_predicate->parameters();
-        new_params.push_back(s_acc_var);
-        auto new_loop_predicate = InvariantPredicate::create(loop.owner_function, loop.loop_predicate->name(), new_params);
-
-        std::vector<const Clause*> clauses_to_transform_list;
-        
-        if (loop.entry_clause) {
-            clauses_to_remove.insert(loop.entry_clause);
-            clauses_to_transform_list.push_back(loop.entry_clause);
-        }
-        clauses_to_remove.insert(loop.inductive_clause);
-        clauses_to_transform_list.push_back(loop.inductive_clause);
-        
-        if (_antecedency.count(loop.loop_predicate)) {
-            for (const auto* exit_clause : _antecedency.at(loop.loop_predicate)) {
-                if (exit_clause != loop.inductive_clause) {
-                    clauses_to_remove.insert(exit_clause);
-                    clauses_to_transform_list.push_back(exit_clause);
-                }
-            }
-        }
-
-        for (const auto* clause : clauses_to_transform_list) {
-            const Clause* new_clause = nullptr; 
-
-            if (clause == loop.entry_clause) {
-                // ... this part is correct, no changes ...
-                auto entry_consequent_app = std::dynamic_pointer_cast<PredicateApplication>(*clause->consequent());
-                auto acc_init_vc = VariableConstant::create(s_acc_var, 0, context);
-                auto new_entry_phi = clause->phi();
-                new_entry_phi.push_back(acc_init_vc == IntegerLiteral::get("0", s_acc_var->type(), context));
-                auto new_entry_args = entry_consequent_app->arguments();
-                new_entry_args.push_back(acc_init_vc);
-                auto new_entry_consequent = std::make_shared<PredicateApplication>(new_loop_predicate, new_entry_args, context);
-                new_clause = new Clause(clause->antecedent_preds(), new_entry_phi, new_entry_consequent, context);
-            }
-            else if (clause == loop.inductive_clause) {
-                // ... this part is also correct, no changes ...
-                auto ind_antecedent_app = std::dynamic_pointer_cast<PredicateApplication>(clause->antecedent_preds().at(0));
-                auto ind_consequent_app = std::dynamic_pointer_cast<PredicateApplication>(*clause->consequent());
-                auto acc_old_vc = VariableConstant::create(s_acc_var, 0, context);
-                auto acc_new_vc = VariableConstant::create(s_acc_var, 1, context);
-                auto s_old_vc = ind_antecedent_app->arguments()[loop.sum_var_arg_idx];
-
-                std::vector<Expr> body_antecedent_args = ind_antecedent_app->arguments();
-                body_antecedent_args.push_back(acc_old_vc);
-                auto body_antecedent = std::make_shared<PredicateApplication>(new_loop_predicate, body_antecedent_args, context);
-
-                std::vector<Expr> body_phi;
-                auto s_new_in_consequent = ind_consequent_app->arguments()[loop.sum_var_arg_idx];
-                for (const auto& expr : clause->phi()) {
-                    auto eq_op = std::dynamic_pointer_cast<OperatorApplication>(expr);
-                    if (eq_op.get() != nullptr && eq_op->operat0r()->name() == "=" && 
-                        eq_op->arguments()[0]->kind() == TermKind::Constant &&
-                        s_new_in_consequent->kind() == TermKind::Constant) {
-                        auto vc1 = std::dynamic_pointer_cast<VariableConstant>(eq_op->arguments()[0]);
-                        auto vc2 = std::dynamic_pointer_cast<VariableConstant>(s_new_in_consequent);
-                        if (vc1.get() != nullptr && vc2.get() != nullptr && vc1->variable() == vc2->variable() && vc1->index() == vc2->index()) {
-                            continue;
-                        }
-                    }
-                    body_phi.push_back(expr);
-                }
-                body_phi.push_back(acc_new_vc == context.apply("+", {acc_old_vc, loop.subtrahend_expr}));
-                
-                auto body_consequent_args = ind_consequent_app->arguments();
-                body_consequent_args[loop.sum_var_arg_idx] = s_old_vc;
-                body_consequent_args.push_back(acc_new_vc);
-                auto body_consequent = std::make_shared<PredicateApplication>(new_loop_predicate, body_consequent_args, context);
-                new_clause = new Clause({body_antecedent}, body_phi, body_consequent, context);
-            }
-            else { // This is an exit clause
-                // === START OF THE MINIMAL FIX ===
-                // The previous logic to detect 'is_actual_loop_exit' was too brittle.
-                // Any clause here is an exit clause by definition, so we always apply the correction.
-                
-                auto exit_antecedent_app = std::dynamic_pointer_cast<PredicateApplication>(clause->antecedent_preds().at(0));
-                auto s_val_at_exit = exit_antecedent_app->arguments()[loop.sum_var_arg_idx];
-                auto acc_final_vc = VariableConstant::create(s_acc_var, 0, context);
-
-                std::vector<Expr> new_exit_antecedent_args = exit_antecedent_app->arguments();
-                new_exit_antecedent_args.push_back(acc_final_vc);
-                auto new_exit_antecedent = std::make_shared<PredicateApplication>(new_loop_predicate, new_exit_antecedent_args, context);
-
-                // This is the logic from the original 'if (is_actual_loop_exit)' block.
-                // It is now applied to all exit clauses.
-                auto s_corrected_vc = std::dynamic_pointer_cast<VariableConstant>(s_val_at_exit)->next();
-                auto corrected_s_val = context.apply("-", {s_val_at_exit, acc_final_vc});
-                std::vector<Expr> new_exit_phi;
-                new_exit_phi.push_back(s_corrected_vc == corrected_s_val);
-                
-                // IMPORTANT: The original code's substitution logic is preserved.
-                // It only substitutes in `phi`, not in the consequent, and uses the existing `substitute` function.
-                std::map<Expr, Expr> sub_map = {{s_val_at_exit, s_corrected_vc}};
-                for (const auto& constraint : clause->phi()) {
-                    new_exit_phi.push_back(substitute(constraint, sub_map));
-                }
-                
-                // The consequent is NOT modified, which matches the original code's behavior.
-                new_clause = new Clause({new_exit_antecedent}, new_exit_phi, clause->consequent(), context);
-                // === END OF THE MINIMAL FIX ===
-            }
-
-            if (new_clause) {
-                clauses_to_add.push_back(new_clause);
-                new_to_old_map[new_clause] = clause;
-            }
-        }
-    }
-
-    // ... The rest of the function remains unchanged ...
-    for (auto clause : clauses_to_remove) { this->erase(clause); }
-
-    for (auto new_clause : clauses_to_add) {
-        const auto* old_clause = new_to_old_map[new_clause];
-        bool was_tagged = false;
-        if (old_clause) {
-            for (auto const& [weakness, clauses] : _weakness_clause_map) {
-                if (clauses.count(old_clause)) {
-                    this->add(new_clause, weakness); 
-                    was_tagged = true;
-                }
-            }
-        }
-        if (!was_tagged) {
-            this->add(new_clause); 
-        }
-    }
-    
-    auto current_clauses = this->to_set();
-    _clauses.clear(); _init_clauses.clear(); _ind_clauses.clear(); _goal_clauses.clear();
-    _antecedency.clear(); _consequency.clear();
-    for (auto clause : current_clauses) { this->add(clause); }
-}
 
 
 
@@ -413,32 +196,59 @@ void HyperGraph::transform_linear_combination_loops(Context &context, Module* ow
                 }
             }
 
-            if (antecedent_pred_to_transform) {
-                const auto& ant_plan = transform_plans.at(antecedent_pred_to_transform);
-                std::map<Expr, Expr> complete_sub_map;
-                for(const auto& app_expr : new_antecedents) {
-                    auto ant_app = std::dynamic_pointer_cast<PredicateApplication>(app_expr);
-                    if(ant_app && ant_app->predicate() == antecedent_pred_to_transform) {
-                        for (size_t j = 0; j < ant_plan.loop_info->sum_updates.size(); ++j) {
-                            const auto& sum_update = ant_plan.loop_info->sum_updates[j];
-                            auto accumulator_var = ant_plan.accumulators[j];
-                            auto acc_at_exit = VariableConstant::create(accumulator_var, 0, context);
-                            auto s_at_exit = ant_app->arguments()[sum_update.sum_var_arg_idx];
-                            complete_sub_map[s_at_exit] = context.apply("-", {s_at_exit, acc_at_exit});
-                        }
-                    }
-                }
-                for (size_t k = 0; k < new_phi.size(); ++k) new_phi[k] = substitute(new_phi[k], complete_sub_map);
-                if (new_consequent.has_value()) new_consequent = substitute(new_consequent.value(), complete_sub_map);
-                for (size_t k=0; k < new_antecedents.size(); ++k) {
-                    auto app_to_modify = std::dynamic_pointer_cast<PredicateApplication>(new_antecedents[k]);
-                     if(app_to_modify && app_to_modify->predicate() == antecedent_pred_to_transform) {
-                        auto args = app_to_modify->arguments(); 
-                        for (auto acc_var : ant_plan.accumulators) args.push_back(VariableConstant::create(acc_var, 0, context));
-                        new_antecedents[k] = std::make_shared<PredicateApplication>(ant_plan.new_predicate, args, context);
-                     }
-                }
+
+
+if (antecedent_pred_to_transform) {
+    const auto& ant_plan = transform_plans.at(antecedent_pred_to_transform);
+    
+
+    std::map<Expr, Expr> ssa_sub_map;       // Map from old var to new SSA var, e.g., |s@0| -> |s@1|
+    std::vector<Expr> ssa_equalities;      // List of new equalities, e.g., (= |s@1| (- |s@0| |acc@0|))
+
+
+    for(const auto& app_expr : new_antecedents) {
+        auto ant_app = std::dynamic_pointer_cast<PredicateApplication>(app_expr);
+        if(ant_app && ant_app->predicate() == antecedent_pred_to_transform) {
+            for (size_t j = 0; j < ant_plan.loop_info->sum_updates.size(); ++j) {
+                const auto& sum_update = ant_plan.loop_info->sum_updates[j];
+                auto accumulator_var = ant_plan.accumulators[j];
+                auto acc_at_exit = VariableConstant::create(accumulator_var, 0, context);
+                auto s_at_exit = ant_app->arguments()[sum_update.sum_var_arg_idx];
+
+                // 1. Create a new SSA version of the variable.
+                auto s_corrected_vc = std::dynamic_pointer_cast<VariableConstant>(s_at_exit)->next();
+
+                // 2. Define the update expression.
+                auto corrected_s_val = context.apply("-", {s_at_exit, acc_at_exit});
+                
+                // 3. Store the defining equality and the substitution rule.
+                ssa_equalities.push_back(s_corrected_vc == corrected_s_val);
+                ssa_sub_map[s_at_exit] = s_corrected_vc;
             }
+        }
+    }
+
+    // 4. Apply the correct SSA substitution to the rest of the clause.
+    for (size_t k = 0; k < new_phi.size(); ++k) {
+        new_phi[k] = substitute(new_phi[k], ssa_sub_map);
+    }
+    if (new_consequent.has_value()) {
+        new_consequent = substitute(new_consequent.value(), ssa_sub_map);
+    }
+
+    // 5. Add the new defining equalities to the clause's body.
+    new_phi.insert(new_phi.end(), ssa_equalities.begin(), ssa_equalities.end());
+
+
+    for (size_t k=0; k < new_antecedents.size(); ++k) {
+        auto app_to_modify = std::dynamic_pointer_cast<PredicateApplication>(new_antecedents[k]);
+            if(app_to_modify && app_to_modify->predicate() == antecedent_pred_to_transform) {
+            auto args = app_to_modify->arguments(); 
+            for (auto acc_var : ant_plan.accumulators) args.push_back(VariableConstant::create(acc_var, 0, context));
+            new_antecedents[k] = std::make_shared<PredicateApplication>(ant_plan.new_predicate, args, context);
+            }
+    }
+}
             
             // --- Step 2: Transform Consequent if necessary (Entry/Inductive logic) ---
             auto cons_app = new_consequent ? std::dynamic_pointer_cast<PredicateApplication>(*new_consequent) : nullptr;
@@ -454,7 +264,7 @@ void HyperGraph::transform_linear_combination_loops(Context &context, Module* ow
                     }
                 }
 
-                if (is_inductive_for_consequent) { // Recipe B
+                if (is_inductive_for_consequent) { 
                     const auto& sum_update = cons_plan.loop_info->sum_updates[0];
                     std::vector<Expr> temp_phi;
                     for(const auto& constraint : new_phi){
@@ -482,7 +292,7 @@ void HyperGraph::transform_linear_combination_loops(Context &context, Module* ow
                     cons_args.push_back(acc_new);
                     new_consequent = std::make_shared<PredicateApplication>(cons_plan.new_predicate, cons_args, context);
 
-                } else { // Recipe A
+                } else { 
                     for (auto acc_var : cons_plan.accumulators) {
                         auto acc_init = VariableConstant::create(acc_var, 0, context);
                         new_phi.push_back(context.apply("=", {acc_init, IntegerLiteral::get("0", acc_var->type(), context)}));
@@ -546,7 +356,7 @@ private:
         return {one, expr};
     }
     
-    // NEW: Recursively find and collect all variable constant terms
+    // Recursively find and collect all variable constant terms
     void collectAllTerms(const Expr& expr, std::vector<HyperGraph::LinearCombinationLoop::LinearTerm>& terms, bool is_positive = true) {
         if (expr->kind() == TermKind::OpApp) {
             auto op_app = std::dynamic_pointer_cast<OperatorApplication>(expr);
@@ -571,11 +381,11 @@ private:
         terms.emplace_back(coeff, var, is_positive);
     }
     
-    // NEW: Find sum variable based on LHS variable match
+    // Find sum variable based on LHS variable match
     std::pair<Expr, std::vector<HyperGraph::LinearCombinationLoop::LinearTerm>> 
     extractSumVariableAndTerms(const std::vector<HyperGraph::LinearCombinationLoop::LinearTerm>& all_terms, const Expr& lhs_expr) {
         
-        Expr sum_var;  // Default initialized shared_ptr (null)
+        Expr sum_var; 
         std::vector<HyperGraph::LinearCombinationLoop::LinearTerm> other_terms;
         
         // Get the variable from LHS
@@ -590,7 +400,7 @@ private:
         
         if (!target_var) {
             std::cout << "    Could not extract target variable from LHS" << std::endl;
-            return {Expr{}, all_terms};  // Return empty Expr instead of using nullptr
+            return {Expr{}, all_terms};
         }
         
         // Find the term that matches the target variable
@@ -601,7 +411,7 @@ private:
                 auto vc = std::dynamic_pointer_cast<VariableConstant>(term.variable);
                 if (vc && vc->variable() == target_var) {
                     std::cout << "    Found matching sum variable term: " << vc->variable()->name() << "[" << vc->index() << "]" << std::endl;
-                    if (sum_var.get() == nullptr) {  // Use .get() == nullptr instead of !
+                    if (sum_var.get() == nullptr) { 
                         sum_var = term.variable;
                         is_sum_var = true;
                     }
@@ -619,13 +429,13 @@ private:
 public:
     LinearExpressionParser(Context& ctx) : context(ctx) {}
     
-    // NEW: Enhanced parsing for nested expressions
+    // parsing for nested expressions
     std::pair<Expr, std::vector<HyperGraph::LinearCombinationLoop::LinearTerm>> parseUpdate(const Expr& rhs_expr, const Expr& lhs_expr) {
         std::cout << "  Parsing RHS with kind=" << (int)rhs_expr->kind() << std::endl;
         
         if (rhs_expr->kind() != TermKind::OpApp) {
             std::cout << "  Not an operation - skipping" << std::endl;
-            return {Expr{}, {}};  // Return null Expr properly
+            return {Expr{}, {}}; 
         }
         
         // Collect ALL terms recursively
@@ -672,12 +482,12 @@ private:
         
         // Check if it's a simple constant (not a complex expression)
         if (term.variable->kind() != TermKind::Constant) {
-            return false; // Complex expressions are likely not simple iterators
+            return false;
         }
         
         auto vc = std::dynamic_pointer_cast<VariableConstant>(term.variable);
         if (vc) {
-            return false; // If it's a variable constant, it's not a simple increment
+            return false;
         }
         
         // Check variable name for common iterator patterns
@@ -761,128 +571,6 @@ public:
 };
 
 
-class UniformAccumulatorTransformation {
-public:
-    struct AccumulatorInfo {
-        std::string acc_name;
-        bool is_positive;
-        Expr term_expr;
-        
-        AccumulatorInfo(const std::string& name, bool pos, Expr expr) 
-            : acc_name(name), is_positive(pos), term_expr(expr) {}
-    };
-    
-    struct TransformationPlan {
-        const Variable* sum_var;
-        std::string initial_var_name;           // s_initial
-        std::vector<AccumulatorInfo> accumulators;
-        bool is_transformable;
-        std::string reason;
-    };
-
-private:
-    // Generate accumulator variable names
-    std::string generateAccumulatorName(const Variable* sum_var, size_t term_index) {
-        return "acc_" + sum_var->name() + "_" + std::to_string(term_index);
-    }
-    
-    // Generate initial value variable name
-    std::string generateInitialVarName(const Variable* sum_var) {
-        return sum_var->name() + "_initial";
-    }
-
-public:
-    // Create transformation plan for a sum update
-    TransformationPlan createTransformationPlan(
-        const HyperGraph::LinearCombinationLoop::SumUpdate& sum_update) {
-        
-        TransformationPlan plan;
-        plan.sum_var = sum_update.sum_var;
-        plan.initial_var_name = generateInitialVarName(sum_update.sum_var);
-        plan.is_transformable = true;
-        plan.reason = "Uniform accumulator transformation";
-        
-        // Create accumulator for each term
-        for (size_t i = 0; i < sum_update.terms.size(); ++i) {
-            const auto& term = sum_update.terms[i];
-            std::string acc_name = generateAccumulatorName(sum_update.sum_var, i);
-            
-            plan.accumulators.emplace_back(acc_name, term.is_positive, term.variable);
-        }
-        
-        return plan;
-    }
-    
-    // Debug output for transformation plan
-    void debugTransformationPlan(const TransformationPlan& plan) {
-        std::cout << "  UNIFORM TRANSFORMATION PLAN for " << plan.sum_var->name() << ":" << std::endl;
-        std::cout << "    Status: " << (plan.is_transformable ? "TRANSFORMABLE" : "NOT_TRANSFORMABLE") << std::endl;
-        std::cout << "    Reason: " << plan.reason << std::endl;
-        std::cout << "    Initial var: " << plan.initial_var_name << std::endl;
-        std::cout << "    Accumulators: " << plan.accumulators.size() << std::endl;
-        
-        for (size_t i = 0; i < plan.accumulators.size(); ++i) {
-            const auto& acc = plan.accumulators[i];
-            std::cout << "      " << i << ": " << acc.acc_name 
-                     << " (" << (acc.is_positive ? "+" : "-") << " term)" << std::endl;
-        }
-    }
-    
-    // Generate the recomputation expression: s = s_initial + acc_0 - acc_1 + acc_2 - ...
-    std::string generateRecomputationExpression(const TransformationPlan& plan) {
-        if (plan.accumulators.empty()) {
-            return plan.sum_var->name() + " = " + plan.initial_var_name;
-        }
-        
-        std::string expr = plan.sum_var->name() + " = " + plan.initial_var_name;
-        
-        for (const auto& acc : plan.accumulators) {
-            expr += (acc.is_positive ? " + " : " - ") + acc.acc_name;
-        }
-        
-        return expr;
-    }
-};
-
-// Integration with existing detection
-class EnhancedLinearCombinationProcessor {
-private:
-    UniformAccumulatorTransformation transformer;
-
-public:
-    // Process detected loops and create transformation plans
-    void processDetectedLoops(const std::vector<HyperGraph::LinearCombinationLoop>& loops) {
-        std::cout << "\n=== PROCESSING DETECTED LOOPS FOR TRANSFORMATION ===" << std::endl;
-        
-        for (size_t loop_idx = 0; loop_idx < loops.size(); ++loop_idx) {
-            const auto& loop = loops[loop_idx];
-            std::cout << "\nLoop " << loop_idx << " (" << loop.loop_predicate->name() << "):" << std::endl;
-            
-            // Process each sum update in the loop
-            for (size_t update_idx = 0; update_idx < loop.sum_updates.size(); ++update_idx) {
-                const auto& sum_update = loop.sum_updates[update_idx];
-                std::cout << "\n  Sum Update " << update_idx << ":" << std::endl;
-                
-                // Create transformation plan
-                auto plan = transformer.createTransformationPlan(sum_update);
-                transformer.debugTransformationPlan(plan);
-                
-                if (plan.is_transformable) {
-                    std::cout << "    Recomputation: " << transformer.generateRecomputationExpression(plan) << std::endl;
-                    
-                    // Here we would apply the actual transformation to the Horn clauses
-                    // For now, just show what would be done
-                    std::cout << "    ✅ READY FOR TRANSFORMATION" << std::endl;
-                } else {
-                    std::cout << "    ❌ SKIPPING: " << plan.reason << std::endl;
-                }
-            }
-        }
-        
-        std::cout << "\n========================================================" << std::endl;
-    }
-};
-
 std::vector<HyperGraph::LinearCombinationLoop> HyperGraph::find_linear_combination_loops(Module* owner) const {
     std::vector<HyperGraph::LinearCombinationLoop> results;
     LinearExpressionParser parser(owner->context());
@@ -897,7 +585,6 @@ std::vector<HyperGraph::LinearCombinationLoop> HyperGraph::find_linear_combinati
         auto antecedent_pred_app = std::dynamic_pointer_cast<PredicateApplication>(ind_clause->antecedent_preds().at(0));
         auto consequent_pred_app = std::dynamic_pointer_cast<PredicateApplication>(*ind_clause->consequent());
         
-        // --- FIX 1: Explicit null checks ---
         if (antecedent_pred_app.get() == nullptr || consequent_pred_app.get() == nullptr || 
             antecedent_pred_app->predicate() != consequent_pred_app->predicate()) continue;
             
@@ -907,7 +594,6 @@ std::vector<HyperGraph::LinearCombinationLoop> HyperGraph::find_linear_combinati
         
         for (const auto& constraint : ind_clause->phi()) {
             auto eq_op = std::dynamic_pointer_cast<OperatorApplication>(constraint);
-            // --- FIX 2: Explicit null check ---
             if (eq_op.get() == nullptr || eq_op->operat0r()->name() != "=" || eq_op->arguments().size() != 2) continue;
             
             auto lhs = eq_op->arguments()[0];
@@ -919,7 +605,6 @@ std::vector<HyperGraph::LinearCombinationLoop> HyperGraph::find_linear_combinati
                 auto vc_new = std::dynamic_pointer_cast<VariableConstant>(lhs);
                 auto vc_old = std::dynamic_pointer_cast<VariableConstant>(sum_old_expr);
                 
-                // --- FIX 3: Explicit null checks ---
                 if (vc_new.get() != nullptr && vc_old.get() != nullptr && 
                     vc_new->variable() == vc_old->variable()) {
                     

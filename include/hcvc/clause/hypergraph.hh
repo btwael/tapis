@@ -77,8 +77,6 @@ namespace hcvc {
   private:
     std::set<Predicate *> _to_be_simplified;
 
-    std::vector<SubtractionLoop> find_subtraction_loops(Module* owner) const;
-    void transform_subtraction_loops(Context &context, Module* owner);
     void transform_linear_combination_loops(Context &context, Module* owner);
 
 
