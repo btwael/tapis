@@ -115,9 +115,8 @@ namespace tapis::HornICE::qdt {
         }
 
         for(auto &comb: combinations) {
-          auto values = state->values();  // Local copy - this is the key!
+          auto values = state->values();  
           
-          // Add quantifier variables to values (existing code)
           for(auto qi: _quantifier_manager.quantifiers(state->predicate())) {
             if (comb.count(qi)) {
                 values[qi->quantifier] = hcvc::IntegerLiteral::get(std::to_string(comb.at(qi)), qi->quantifier->type(), _context);
@@ -175,17 +174,6 @@ namespace tapis::HornICE::qdt {
               } else {
                   continue;
               }
-                  // DEBUG: Print sum computation details
-    // std::cout << "[DEBUG] Computing sum for " << info->variable->name() << ":" << std::endl;
-    // std::cout << "  Array: " << info->array->name() << " = [";
-    // for (size_t k = 0; k < array_literal->values().size(); ++k) {
-    //     auto elem = std::dynamic_pointer_cast<hcvc::IntegerLiteral>(array_literal->values()[k]);
-    //     // std::cout << (elem ? elem->value() : "?");
-    //     if (k < array_literal->values().size() - 1) std::cout << ", ";
-    // }
-    // std::cout << "]" << std::endl;
-    // std::cout << "  Lower bound: " << lower_val << std::endl;
-    // std::cout << "  Upper bound: " << upper_val << std::endl;
 
               // Calculate sum
               long long current_sum = 0;

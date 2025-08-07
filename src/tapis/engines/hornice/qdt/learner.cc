@@ -105,12 +105,17 @@ Learner::Learner(hcvc::Module *module, const hcvc::ClauseSet &clauses,
     std::cout << "Learner.propose!" << "\n";
 #endif
     for(auto &[predicate, formula]: solution) {
-      // **THE LIFTING FIX**
-      // 1. First, lift the array accessors (e.g., !array!k0 -> array[k0])
-      auto lifted_formula = _quantifier_manager->quantify(predicate, formula, !_quantify);
+
+      auto lifted_formula = _aggregation_manager->substitute(predicate, formula);
+
+
+
+      auto  final_formula = _quantifier_manager->quantify(predicate, lifted_formula, false);
+
+
+
+
       
-      // 2. Second, lift the sum aggregations (e.g., !s_array_0_i -> sum(array, 0, i))
-      auto final_formula = _aggregation_manager->substitute(predicate, lifted_formula);
 
       hypothesis.emplace(predicate, LambdaDefinition(predicate, final_formula));
 

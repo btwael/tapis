@@ -64,13 +64,13 @@ namespace tapis::HornICE::qdt {
   private:
     unsigned long _quantifier_per_array;
     std::set<const hcvc::Predicate *> _predicates;
-    std::map<const hcvc::Predicate *, std::vector<QuantifierInfo *>> _quantifiers;
+    std::map<const hcvc::Predicate *, std::vector<QuantifierInfo *>> _quantifiers; // WE can use this
     std::map<const hcvc::Predicate *, hcvc::Expr> _restrictions;
     std::map<const hcvc::Predicate *, std::vector<hcvc::Expr>> _quantifier_exprs;
     std::map<const hcvc::Predicate *, std::map<hcvc::Expr, hcvc::Expr>> _sub_maps;
     std::map<const hcvc::Predicate *, std::set<const hcvc::Variable *>> _quantifier_variables;
     std::map<const hcvc::Predicate *, std::set<const hcvc::Variable *>> _accessor_variables;
-    std::map<const hcvc::Predicate *, std::map<const hcvc::Variable *, std::vector<QuantifierInfo *>>> _array_quantifiers;
+    std::map<const hcvc::Predicate *, std::map<const hcvc::Variable *, std::vector<QuantifierInfo *>>> _array_quantifiers; // 
     std::map<const hcvc::Predicate *, std::vector<QuantifierInfo *>> _injected_access_variables;
 
     unsigned long _qc = 0;
