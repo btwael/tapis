@@ -4,17 +4,21 @@
 
 #include "smtface/solvers/z3/solver.hh"
 
+
+
 #include <list>
 #include "smtface/shorthands.hh"
+#include "hcvc/logic/term.hh"
+
 
 namespace smtface::solvers {
 
     // The constructor remains the same as the previous correct version.
     Z3Solver::Z3Solver(Context &context)
-        : Solver(context), _z3_solver(_z3_context, "UFLIA"), _converter(context, _z3_context) {
+        : Solver(context), _z3_solver(_z3_context), _converter(context, _z3_context) {
         
-        _z3_context.set(":random-seed", 12);
-        z3::set_param("model.compact", "false");
+        // _z3_context.set(":random-seed", 12);
+        // z3::set_param("model.compact", "false");
         _z3_solver.push(); 
 
 
@@ -25,9 +29,14 @@ namespace smtface::solvers {
     _z3_solver.pop();
     _z3_solver.push();
 
+    // std::cout << "[DEBUG] Z3Solver::get_model: " << smtface::ToString(formula) << std::endl;
     
     auto encoded = _converter.encode_expr(formula);
+
+
     _z3_solver.add(encoded);
+    std::cout << "[DEBUG] Z3Solver::get_model: " << encoded << std::endl;
+    // std::cout << encoded << std::endl;
     auto res = _z3_solver.check();
     if(res == z3::check_result::sat) {
       return std::optional<Model>(new Z3Model(_z3_solver.get_model(), _converter));

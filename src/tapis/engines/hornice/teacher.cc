@@ -269,7 +269,7 @@ if(param->type()->is_array()) {
                             {context.apply("or", {zero > q, length <= q}),
                              context.apply("[]", {array, q}) == zero}), context);
           //std::cout << outofrange << "\n";
-          return f && outofrange;
+          return f;
         });
         if(!res.empty()) {
           return res;
@@ -296,7 +296,7 @@ if(param->type()->is_array()) {
                             {context.apply("or", {zero > q, length <= q}),
                              context.apply("[]", {array, q}) == zero}), context);
           //std::cout << outofrange << "\n";
-          return outofrange;
+          return context.get_true();
         });
         if(!res.empty()) {
           get_bounds()._max_array_value++;
@@ -320,7 +320,7 @@ if(param->type()->is_array()) {
                             {context.apply("or", {zero > q, length <= q}),
                              context.apply("[]", {array, q}) == zero}), context);
           //std::cout << outofrange << "\n";
-          return outofrange;
+          return context.get_true();
         });
         if(!res.empty()) {
           return res;
