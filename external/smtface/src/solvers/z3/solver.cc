@@ -26,6 +26,8 @@ namespace smtface::solvers {
   Z3Solver::~Z3Solver() = default;
 
   std::optional<Model> Z3Solver::get_model(const core::Expr &formula) {
+    std::cout << "[DEBUG] Z3Solver::get_model: " << _z3_solver.to_smt2() << std::endl;
+
     _z3_solver.pop();
     _z3_solver.push();
 
@@ -35,7 +37,6 @@ namespace smtface::solvers {
 
 
     _z3_solver.add(encoded);
-    std::cout << "[DEBUG] Z3Solver::get_model: " << encoded << std::endl;
     // std::cout << encoded << std::endl;
     auto res = _z3_solver.check();
     if(res == z3::check_result::sat) {

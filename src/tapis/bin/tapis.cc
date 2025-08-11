@@ -57,6 +57,23 @@ std::set<tapis::AttributeDomain> string_to_enum_domains(std::string input) {
   return res;
 }
 
+std::set<std::string> split_string_to_set(std::string input, const std::string& delimiter) {
+    std::set<std::string> result;
+    size_t pos = 0;
+    std::string token;
+    while ((pos = input.find(delimiter)) != std::string::npos) {
+        token = input.substr(0, pos);
+        if (!token.empty()) {
+            result.insert(token);
+        }
+        input.erase(0, pos + delimiter.length());
+    }
+    if (!input.empty()) {
+        result.insert(input);
+    }
+    return result;
+}
+
 int main(int argc, char *argv[]) {
   //*- parse options
   tapis::Options &options = tapis::get_options();
@@ -133,7 +150,15 @@ int main(int argc, char *argv[]) {
         std::string quantifiers_str(argv[i + 1]);
         i++;
         options.ice.qdt.quantifier_numbers = std::stol(quantifiers_str);
-      } else if(argument == "--no-qdt.bounded_data_values") {
+      } else if(argument == "--qdt.share-quantifiers") {
+        std::string arrays_str(argv[i + 1]);
+        i++;
+        auto shared_group = split_string_to_set(arrays_str, ",");
+        if (!shared_group.empty()) {
+            options.ice.qdt.shared_quantifier_groups.push_back(shared_group);
+        }
+      }
+      else if(argument == "--no-qdt.bounded_data_values") {
         options.ice.qdt.bounded_data_values = false;
       } else if(argument == "--qdt.eq_classes_attr_vars") {
         options.ice.qdt.eq_classes_attr_vars = true;

@@ -93,6 +93,12 @@ void AggregationManager::setup() {
 
             // Generate sum variables: sum(array, lower_bound, upper_bound)
             for (const auto* lower_var : lower_bounds) {
+                
+                // ⚙️ OPTIMIZATION: Skip sum(a, N, ...) where N is the array size.
+                if (lower_var != nullptr && array->size_variable() == lower_var) {
+                    continue;
+                }
+
                 for (const auto* upper_var : upper_bounds) {
                     if (upper_var == nullptr) continue;
                     if (lower_var == upper_var) continue;
@@ -114,7 +120,7 @@ void AggregationManager::setup() {
 
                     auto array_term = hcvc::VariableConstant::create(array, 0, context());
                     auto lower_term = (lower_var) ? hcvc::VariableConstant::create(lower_var, 0, context()) : 
-                                                   hcvc::IntegerLiteral::get("0", context().type_manager().int_type(), context());
+                                                    hcvc::IntegerLiteral::get("0", context().type_manager().int_type(), context());
                     auto upper_term = hcvc::VariableConstant::create(upper_var, 0, context());
 
                     auto sum_term = context().apply("sum", {array_term, lower_term, upper_term});

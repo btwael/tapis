@@ -11,12 +11,15 @@ long s = 0;
 
 int i;
 for (i = 0; i < N; i++) {
-    s = s + a[i];
     b[i] = s;
+    s = s + a[i];
+// assert_exp("(= ([] b i) (sum a 0 (+ i 1)))");
+
+
 }
 
 // assert_exp("(= s (sum a 0 N))");
-assert_exp("(forall ((k Int)) (=> (and (>= k 0) (< k N)) (= ([] b k) (sum a 0  k))))");
+assert_exp("(forall ((k Int)) (=> (and (>= k 0) (< k N)) (= ([] b k) (sum a 0 k ))))");
 
   return 0;
 }

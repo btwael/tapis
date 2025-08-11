@@ -26,199 +26,134 @@ namespace tapis::HornICE::qdt {
         _aggregation_manager(aggregation_manager),
         _context(context) {}
 
-  const std::list<const Diagram *> &DiagramManager::get_diagrams(const hcvc::State *state) {
+const std::list<const Diagram *> &DiagramManager::get_diagrams(const hcvc::State *state) {
     std::set<const hcvc::Variable *> _skip_variables;
     for(auto var: state->predicate()->parameters()) {
-      if(var->type()->is_array() && var->is_shadow()) {
-        _skip_variables.insert(var);
-      }
+        if(var->type()->is_array() && var->is_shadow()) {
+            _skip_variables.insert(var);
+        }
     }
     if(_state_diagrams.count(state) == 0) {
-      bool has_array = false;
-      for(auto &[var, _]: state->values()) {
-        if(var->type()->is_array()) {
-          has_array = true;
-          break;
-        }
-      }
-      if(has_array) {
-        std::list<std::map<QuantifierInfo *, unsigned long>> combinations;
-        std::map<QuantifierInfo *, unsigned long> max_sizes;
-        for(auto qi: _quantifier_manager.quantifiers(state->predicate())) {
-          max_sizes[qi] = std::stol(
-              std::dynamic_pointer_cast<hcvc::IntegerLiteral>(state->values().at(qi->size_variable))->value());
-        }
-        std::map<hcvc::Variable *, std::list<std::map<QuantifierInfo *, unsigned long>>> array_combinations;
-        for(auto parameter: state->predicate()->parameters()) {
-          if(parameter->type()->is_array()) {
-            if(_skip_variables.count(parameter) > 0) {
-              if(get_options().ice.qdt.abstract_summary_input_arrays) {
-                continue;
-              }
+        bool has_array = false;
+        for(auto &[var, _]: state->values()) {
+            if(var->type()->is_array()) {
+                has_array = true;
+                break;
             }
-                auto& aq_map = _quantifier_manager.array_quantifiers(state->predicate());
-    if (aq_map.find(parameter) == aq_map.end()) {
-      // No quantifiers for this array parameter
-      continue;
-    }
-    
-    const auto& quantifiers_for_array = aq_map.at(parameter);
-    if (quantifiers_for_array.empty()) {
-      // No quantifiers for this array
-      continue;
-    }
-            std::list<std::map<QuantifierInfo *, unsigned long>> array_combination;
-            for(unsigned long i = 0; i < quantifiers_for_array.size(); i++) {
-              auto qi = quantifiers_for_array[i];
-              if(i == 0) {
-                for(unsigned long j = 0; j < max_sizes[qi]; j++) {
-                  array_combination.emplace_back(std::map<QuantifierInfo *, unsigned long>({{qi, j}}));
+        }
+        if(has_array) {
+            // This is the new, refactored combination generation logic 🚀
+            std::list<std::map<const hcvc::Variable *, unsigned long>> combinations;
+            
+            // 1. Group QuantifierInfo objects by their underlying shared quantifier variable.
+            std::map<const hcvc::Variable *, std::vector<QuantifierInfo*>> unique_quantifiers;
+            std::map<QuantifierInfo *, unsigned long> max_sizes;
+
+            for (auto qi : _quantifier_manager.quantifiers(state->predicate())) {
+                if (_skip_variables.count(qi->array) > 0 && get_options().ice.qdt.abstract_summary_input_arrays) {
+                    continue;
                 }
-              } else {
-                auto qi_1 = quantifiers_for_array[i - 1];
-                std::list<std::map<QuantifierInfo *, unsigned long>> new_comp;
-                for(auto comp: array_combination) {
-                  for(unsigned long k = 0; k < max_sizes[qi]; k++) {
-                    if(comp.at(qi_1) <= k) {
-                      auto c = comp;
-                      c[qi] = k;
-                      new_comp.emplace_back(c);
+                unique_quantifiers[qi->quantifier].push_back(qi);
+                max_sizes[qi] = std::stol(
+                    std::dynamic_pointer_cast<hcvc::IntegerLiteral>(state->values().at(qi->size_variable))->value());
+            }
+
+            // 2. Build combinations based on the unique quantifiers, not per-array.
+            std::vector<const hcvc::Variable*> unique_quantifier_list;
+            for(const auto& [quant_var, qi_list] : unique_quantifiers) {
+                unique_quantifier_list.push_back(quant_var);
+            }
+
+            for (unsigned long i = 0; i < unique_quantifier_list.size(); ++i) {
+                const auto* quant_var = unique_quantifier_list[i];
+                const auto& qi_list = unique_quantifiers.at(quant_var);
+                
+                // All QIs for a shared quantifier should have the same max size. We take the first one.
+                unsigned long max_val = max_sizes.at(qi_list[0]); 
+
+                if (i == 0) {
+                    for (unsigned long j = 0; j < max_val; ++j) {
+                        combinations.emplace_back(std::map<const hcvc::Variable *, unsigned long>({{quant_var, j}}));
                     }
-                  }
+                } else {
+                    const auto* prev_quant_var = unique_quantifier_list[i-1];
+                    std::list<std::map<const hcvc::Variable *, unsigned long>> new_combinations;
+                    for (const auto& old_comb : combinations) {
+                        for (unsigned long k = 0; k < max_val; ++k) {
+                            // This condition ensures ordered quantifiers (k_i <= k_{i+1})
+                            if (old_comb.at(prev_quant_var) <= k) {
+                                auto c = old_comb;
+                                c[quant_var] = k;
+                                new_combinations.push_back(c);
+                            }
+                        }
+                    }
+                    combinations = new_combinations;
                 }
-                array_combination = new_comp;
-              }
             }
-            array_combinations[parameter] = array_combination;
-          }
-        }
-        unsigned long i = 0;
-        for(const auto &[array, combs]: array_combinations) {
-          if(i == 0 || combinations.empty()) {
-            combinations = combs;
-          } else {
-            std::list<std::map<QuantifierInfo *, unsigned long>> new_comp;
-            for(const auto &old: combinations) {
-              for(const auto &comb: combs) {
-                auto c = old;
-                c.insert(comb.begin(), comb.end());
-                new_comp.push_back(c);
-              }
+            
+            if (combinations.empty() && !unique_quantifier_list.empty()) {
+                // This case can happen if max_size is 0 for the first quantifier.
+                // We still need a single empty combination to proceed.
+                combinations.push_back({});
+            } else if (unique_quantifier_list.empty()) {
+                // No quantifiers at all, create one diagram with no quantifier values.
+                combinations.push_back({});
             }
-            combinations = new_comp;
-          }
-          i++;
-        }
+            
+            // 3. For each valid combination, create a diagram.
+            for(auto &comb: combinations) {
+                auto values = state->values();
+                
+                // For each unique quantifier in the combination, update all its associated QuantifierInfos
+                for (const auto& [quant_var, value] : comb) {
+                    const auto& qi_list = unique_quantifiers.at(quant_var);
+                    for (const auto* qi : qi_list) {
+                        values[qi->quantifier] = hcvc::IntegerLiteral::get(std::to_string(value), qi->quantifier->type(), _context);
+                        values[qi->accessor] = std::dynamic_pointer_cast<hcvc::ArrayLiteral>(state->values().at(qi->array))->values().at(value);
+                    }
+                }
+                
+                // --- Aggregation logic remains the same ---
+                const auto& agg_infos = _aggregation_manager.get_aggregations(state->predicate());
+                for (const auto* info : agg_infos) {
+                    if (values.find(info->array) == values.end()) { continue; }
+                    auto array_literal = std::dynamic_pointer_cast<hcvc::ArrayLiteral>(values.at(info->array));
+                    if (array_literal.get() == nullptr) { continue; }
 
-        if (combinations.empty()) {
-            combinations.push_back({});
-        }
+                    long lower_val = 0;
+                    if (info->lower_bound && values.count(info->lower_bound)) {
+                        auto lit = std::dynamic_pointer_cast<hcvc::IntegerLiteral>(values.at(info->lower_bound));
+                        if(lit) lower_val = std::stol(lit->value()); else continue;
+                    } else if (info->lower_bound) { continue; }
 
-        for(auto &comb: combinations) {
-          auto values = state->values();  
-          
-          for(auto qi: _quantifier_manager.quantifiers(state->predicate())) {
-            if (comb.count(qi)) {
-                values[qi->quantifier] = hcvc::IntegerLiteral::get(std::to_string(comb.at(qi)), qi->quantifier->type(), _context);
-                values[qi->accessor] = std::dynamic_pointer_cast<hcvc::ArrayLiteral>(state->values().at(qi->array))->values().at(comb.at(qi));
+                    long upper_val = 0;
+                    if (info->upper_bound && values.count(info->upper_bound)) {
+                        auto lit = std::dynamic_pointer_cast<hcvc::IntegerLiteral>(values.at(info->upper_bound));
+                        if(lit) upper_val = std::stol(lit->value()); else continue;
+                    } else { continue; }
+
+                    long long current_sum = 0;
+                    size_t array_size = array_literal->values().size();
+                    if (lower_val <= upper_val && static_cast<size_t>(upper_val) <= array_size) {
+                        for (long k = lower_val; k < upper_val; ++k) {
+                            auto elem_lit = std::dynamic_pointer_cast<hcvc::IntegerLiteral>(array_literal->values().at(k));
+                            if (elem_lit) current_sum += std::stoll(elem_lit->value());
+                        }
+                    }
+                    values[info->variable] = hcvc::IntegerLiteral::get(std::to_string(current_sum), info->variable->type(), _context);
+                }
+
+                auto diagram = _get_diagram(state->predicate(), values);
+                _state_diagrams[state].push_back(diagram);
             }
-          }
-          
-          const auto& agg_infos = _aggregation_manager.get_aggregations(state->predicate());
-          for (const auto* info : agg_infos) {
-              // Skip if array not found
-              if (values.find(info->array) == values.end()) {
-                        // std::cout << "[DEBUG] Skipping sum for missing array: " << info->array->name() << std::endl;
-
-                  continue;
-              }
-              
-              auto array_literal_expr = values.at(info->array);
-              auto array_literal = std::dynamic_pointer_cast<hcvc::ArrayLiteral>(array_literal_expr);
-              if (array_literal.get() == nullptr) {
-                        // std::cout << "[DEBUG] Array is not a literal: " << info->array->name() << std::endl;
-
-                  continue;
-              }
-              
-              // Get lower bound - check in 'values' which has quantifier values
-              long lower_val = 0;
-              if (info->lower_bound) {
-                  if (values.find(info->lower_bound) != values.end()) {
-                      auto lower_expr = values.at(info->lower_bound);
-                      auto lower_lit = std::dynamic_pointer_cast<hcvc::IntegerLiteral>(lower_expr);
-                      if (lower_lit) {
-                          lower_val = std::stol(lower_lit->value());
-                      } else {
-                          continue;
-                      }
-                  } else {
-                      continue;
-                  }
-              }
-              
-              // Get upper bound
-              long upper_val = 0;
-              if (info->upper_bound) {
-                  if (values.find(info->upper_bound) != values.end()) {
-                      auto upper_expr = values.at(info->upper_bound);
-                      auto upper_lit = std::dynamic_pointer_cast<hcvc::IntegerLiteral>(upper_expr);
-                      if (upper_lit) {
-                          upper_val = std::stol(upper_lit->value());
-                      } else {
-                          continue;
-                      }
-                  } else {
-                      continue;
-                  }
-              } else {
-                  continue;
-              }
-
-              // Calculate sum
-              long long current_sum = 0;
-              size_t array_size = array_literal->values().size();
-              if (lower_val >= 0 && upper_val >= 0 && 
-                  lower_val <= upper_val && 
-                  static_cast<size_t>(upper_val) <= array_size) {
-
-                            // std::cout << "  Summing indices [" << lower_val << ", " << upper_val << "):" << std::endl;
-
-                  
-                  for (long k = lower_val; k < upper_val; ++k) {
-                      auto elem_expr = array_literal->values().at(static_cast<size_t>(k));
-                      auto elem_lit = std::dynamic_pointer_cast<hcvc::IntegerLiteral>(elem_expr);
-                      if (elem_lit) {
-                        long elem_val = std::stol(elem_lit->value());
-                          current_sum += std::stoll(elem_lit->value());
-                                          // std::cout << "    array[" << k << "] = " << elem_val << ", running sum = " << current_sum << std::endl;
-
-                      }
-                  }
-              }
-
-              // 3. Inject the KNOWN SAFE value to prevent the crash.
-                  // std::cout << "  Final sum: " << current_sum << std::endl;
-
-              values[info->variable] = hcvc::IntegerLiteral::get(
-                  std::to_string(current_sum), 
-                  info->variable->type(), 
-                  _context
-              );
-              
-          }
-          // Create diagram with all the values (quantifiers + sums)
-          auto diagram = _get_diagram(state->predicate(), values);
-          _state_diagrams[state].push_back(diagram);
+        } else {
+            auto diagram = _get_diagram(state->predicate(), state->values());
+            _state_diagrams[state].push_back(diagram);
         }
-      } else {
-        auto diagram = _get_diagram(state->predicate(), state->values());
-        _state_diagrams[state].push_back(diagram);
-      }
     }
     return _state_diagrams.at(state);
-  }
-
+}
 const Diagram *
 DiagramManager::_get_diagram(const hcvc::Predicate *predicate,
                              const std::map<const hcvc::Variable *, hcvc::Expr> &values) {

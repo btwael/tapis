@@ -73,6 +73,8 @@ namespace tapis {
         bool bounded_data_values = true;
         bool eq_classes_attr_vars = false;
         bool abstract_summary_input_arrays = true;
+        std::list<std::set<std::string>> shared_quantifier_groups;
+
       };
 
     public:
