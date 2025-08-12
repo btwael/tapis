@@ -3,6 +3,7 @@
 #include "hcvc/program/variable.hh"
 #include "hcvc/logic/substituter.hh"
 #include <cassert>
+#include "tapis/engines/options.hh"
 
 namespace tapis::HornICE::qdt {
 
@@ -74,6 +75,17 @@ void AggregationManager::setup() {
         const auto& array_quantifiers_map = _quantifier_manager.array_quantifiers(predicate);
 
         for (const auto* array : arrays_in_pred) {
+            
+            // Check if sum variables should be generated for this array
+            const auto& sum_on_arrays_opt = get_options().ice.qdt.use_sum_on_arrays;
+            if (sum_on_arrays_opt.has_value()) {
+                // The flag was used. Only proceed if this array is in the specified set.
+                if (sum_on_arrays_opt.value().count(array->name()) == 0) {
+                    continue; // Skip processing this array
+                }
+            }
+            // If the flag wasn't used, or if the array is allowed, we continue below.
+
             // For THIS specific array, create bounds from:
             // 1. Program variables (can be used for any array)
             std::vector<const hcvc::Variable*> bounds_for_this_array = program_int_vars;
@@ -94,7 +106,6 @@ void AggregationManager::setup() {
             // Generate sum variables: sum(array, lower_bound, upper_bound)
             for (const auto* lower_var : lower_bounds) {
                 
-                // ⚙️ OPTIMIZATION: Skip sum(a, N, ...) where N is the array size.
                 if (lower_var != nullptr && array->size_variable() == lower_var) {
                     continue;
                 }

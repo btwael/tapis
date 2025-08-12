@@ -614,8 +614,8 @@ void NewAttributeSynthesizer::setup() {
       if(get_options().ice.learner.mix_data_indexes) {
         indexes.insert(indexes.end(), datas.begin(), datas.end());
         indexes.insert(indexes.end(), sums.begin(), sums.end());
-        datas.clear();
-        sums.clear();
+        // datas.clear();
+        // sums.clear();
       }
 
       // Create enumerators for booleans
@@ -675,7 +675,7 @@ void NewAttributeSynthesizer::setup() {
         }
       }
     }
-    generate_attributes(nullptr);
+    // generate_attributes(nullptr);
   }
   std::pair<std::set<const Attribute *>, std::set<const Attribute *>>
   NewAttributeSynthesizer::attributes(const hcvc::Predicate *predicate) const {

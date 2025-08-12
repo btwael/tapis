@@ -8,6 +8,7 @@
 #include <set>
 #include <string>
 #include "hcvc/logic/term.hh"
+#include <optional>
 
 namespace tapis {
 
@@ -74,6 +75,7 @@ namespace tapis {
         bool eq_classes_attr_vars = false;
         bool abstract_summary_input_arrays = true;
         std::list<std::set<std::string>> shared_quantifier_groups;
+        std::optional<std::set<std::string>> use_sum_on_arrays;
 
       };
 

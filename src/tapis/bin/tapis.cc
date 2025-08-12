@@ -157,6 +157,10 @@ int main(int argc, char *argv[]) {
         if (!shared_group.empty()) {
             options.ice.qdt.shared_quantifier_groups.push_back(shared_group);
         }
+      }else if(argument == "--qdt.use-sum-on-arrays") {
+        std::string arrays_str(argv[i + 1]);
+        i++;
+        options.ice.qdt.use_sum_on_arrays = split_string_to_set(arrays_str, ",");
       }
       else if(argument == "--no-qdt.bounded_data_values") {
         options.ice.qdt.bounded_data_values = false;
