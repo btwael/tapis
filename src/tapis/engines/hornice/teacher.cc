@@ -30,9 +30,9 @@ namespace tapis::HornICE {
                               hcvc::StateManager &state_manager) {
     auto z3m = std::dynamic_pointer_cast<smtface::solvers::Z3Model>(model)->z3_model();
 
-    std::cout << "######" << std::endl;
+    // std::cout << "######" << std::endl;
 
-    std::cout << z3m << std::endl;
+    // std::cout << z3m << std::endl;
 
     std::map<std::string, z3::func_decl> interps;
     for(unsigned long i = 0; i < z3m.num_funcs(); i++) {
@@ -348,7 +348,7 @@ const hcvc::Implication *Teacher::_check(const hcvc::Clause *clause,
                                              const hcvc::Expr &)> &size_restriction_func,
                                          const std::function<hcvc::Expr(
                                              const hcvc::Expr &)> &array_restriction_func) {
-    std::cout << "[DEBUG] Starting _check for clause: " << clause << std::endl;
+    // std::cout << "[DEBUG] Starting _check for clause: " << clause << std::endl;
     clause->dump();
 
     auto lhs = clause->phi_expr();

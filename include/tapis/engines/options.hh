@@ -76,6 +76,7 @@ namespace tapis {
         bool abstract_summary_input_arrays = true;
         std::list<std::set<std::string>> shared_quantifier_groups;
         std::optional<std::set<std::string>> use_sum_on_arrays;
+        double hint_score_alpha = 0.85;
 
       };
 

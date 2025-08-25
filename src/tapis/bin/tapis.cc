@@ -182,6 +182,22 @@ int main(int argc, char *argv[]) {
           }
         }
       }
+      else if(argument == "--qdt.alpha") {
+        std::string alpha_str(argv[i + 1]);
+        i++;
+        try {
+            double alpha_val = std::stod(alpha_str);
+            if (alpha_val >= 0.0 && alpha_val <= 1.0) {
+                options.ice.qdt.hint_score_alpha = alpha_val;
+            } else {
+                std::cerr << "Error: --qdt.alpha value must be between 0.0 and 1.0." << std::endl;
+                return 1; // Exit with an error code
+            }
+        } catch (const std::invalid_argument& e) {
+            std::cerr << "Error: Invalid number for --qdt.alpha: " << alpha_str << std::endl;
+            return 1;
+        }
+      }
         // output options
       else if(argument == "--stats") {
         options.output.statistics = true;

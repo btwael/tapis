@@ -48,7 +48,11 @@ namespace tapis::HornICE::qdt {
     hcvc::ClauseSet _clause_set;
     std::set<const hcvc::Predicate *> _predicates;
     QuantifierManager &_quantifier_manager;
-    AggregationManager& _aggregation_manager;  // Add this member
+    AggregationManager& _aggregation_manager; 
+  protected: 
+    double _alpha;
+    double _m_t = 0.0;
+    double _v_t = 0.0;
 
   };
 

@@ -8,8 +8,13 @@
 #include "hcvc/logic/term.hh"
 #include "hcvc/program/state.hh"
 #include "tapis/engines/hornice/qdt/diagram.hh"
+#include "tapis/engines/hornice/qdt/hint_template.hh"
+
 
 namespace tapis::HornICE::qdt {
+
+struct HintTemplate;
+class Attribute; 
 
   class Attribute {
   public:
@@ -30,11 +35,21 @@ namespace tapis::HornICE::qdt {
     bool satisfied_by(const Diagram *diagram) const;
 
     mutable unsigned long _level = 0;
+
+    void set_cached_template(const std::shared_ptr<tapis::HornICE::qdt::HintTemplate>& ht) {
+        _cached_template = ht;
+    }
+
+    const std::shared_ptr<tapis::HornICE::qdt::HintTemplate>& get_cached_template() const {
+        return _cached_template;
+    }
   private:
     const hcvc::Predicate *_predicate;
     hcvc::Expr _constraint;
 
     mutable std::unordered_map<const Diagram *, bool> _sat_cache;
+    std::shared_ptr<tapis::HornICE::qdt::HintTemplate> _cached_template;
+
   };
 
   //*-- AttributeManager
@@ -84,6 +99,8 @@ namespace tapis::HornICE::qdt {
     attributes(const hcvc::Predicate *predicate) const = 0;
 
     virtual bool generate_attributes(DiagramPartialReachabilityGraph *sample) = 0;
+    virtual const std::set<std::shared_ptr<HintTemplate>>& get_hint_templates(const hcvc::Predicate* p) const = 0;
+
 
   private:
     AttributeManager *_attr_manager;

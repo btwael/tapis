@@ -2,25 +2,31 @@ int main() {
 
 int N;
 assume(N > 0);
-int a[N];
+int a[N]; 
+int  b[N];
 long s = 0;
 
 int i;
 
-// for (int k = 0; k < N; k++) {
-//   assume(a[k] == 1);
 
-// }
 
 for (i = 0; i < N; i++) {
+    b[i] = s;
     s = s + a[i];
-// assert_exp("(= ([] b i) (sum a 0 (+ i 1)))");
 
 }
 
-// assert_exp("(forall ((k Int)) (=> (and (>= k 0) (< k N)) (= ([] b k) (sum a 0 (+ k ))))");
+// for (i = 0; i < N; i++) {
+//     // b[i] = s;
+//     s = s - a[i];
 
-assert_exp("(= s (sum a 0 N))");
+// }
+
+
+
+assert_exp("(forall ((k Int)) (=> (and (>= k 0) (< k N)) (= ([] b k) (sum a 0 k))))");
+
+// assert_exp("(= s 0)");
 
   return 0;
 }

@@ -10,6 +10,7 @@
 #include "tapis/engines/hornice/qdt/quantifier.hh"
 #include "tapis/engines/hornice/qdt/aggregation.hh"
 #include "tapis/engines/hornice/qdt/general_qdt/classifier.hh"
+#include "tapis/engines/statistics.hh"
 #include <memory>
 
 namespace tapis {
@@ -71,6 +72,10 @@ void HornICEQDT::solve() {
 
     HornICE::HornICE hice(this->module(), this->clauses(), learner);
     auto res = hice.verify();
+
+
+    std::cout << "------------------------\n";
+    std::cout << "Verification finished in " << get_statistics().ice.iterations << " iterations.\n";
 
     if (res == hcvc::VerifierResponse::SAFE) {
         std::cout << "SAFE\n";

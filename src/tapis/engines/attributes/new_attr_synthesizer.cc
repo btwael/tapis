@@ -10,8 +10,237 @@
 #include "tapis/engines/bounds.hh"
 #include "tapis/engines/outputs.hh"
 
+#include "hcvc/logic/term.hh"
+#include "tapis/engines/hornice/qdt/hint_template.hh"
+
+
 namespace tapis::HornICE::qdt {
 
+std::string role_to_string(tapis::HornICE::qdt::VariableRole role) {
+    switch (role) {
+        case tapis::HornICE::qdt::VariableRole::UNKNOWN:    return "UNKNOWN";
+        case tapis::HornICE::qdt::VariableRole::INDEX:      return "INDEX";
+        case tapis::HornICE::qdt::VariableRole::QUANTIFIER: return "QUANTIFIER";
+        case tapis::HornICE::qdt::VariableRole::ARRAY_SIZE: return "ARRAY_SIZE";
+        case tapis::HornICE::qdt::VariableRole::ARRAY:      return "ARRAY";
+        case tapis::HornICE::qdt::VariableRole::DATA:       return "DATA";
+        case tapis::HornICE::qdt::VariableRole::LITERAL:    return "LITERAL";
+        default:                                           return "INVALID_ROLE";
+    }
+}
+
+void print_hint_template(const std::shared_ptr<HintTemplate>& ht, int indent) {
+    if (!ht) return;
+    std::cerr << std::string(indent, ' ');
+
+    if (ht->op) {
+        std::cerr << ht->op->name() << "\n";
+    } else {
+        std::cerr << "[Quantified Formula]\n";
+    }
+
+    // 📣 UPDATED: Print the parameter's expression AND its identified role.
+    for (const auto& param : ht->simple_params) {
+        std::cerr << std::string(indent + 2, ' ') << param.expr
+                  << "\t(Role: " << role_to_string(param.role) << ")"
+                  << "\n";
+    }
+    for (const auto& nested : ht->nested_params) {
+        print_hint_template(nested, indent + 2);
+    }
+}
+class HintCanonicalizer : public hcvc::Visitor {
+public:
+    HintCanonicalizer(AggregationManager& agg_mgr, QuantifierManager& q_mgr)
+        : _agg_mgr(agg_mgr), _q_mgr(q_mgr) {}
+
+    hcvc::Expr process(const hcvc::Expr& expr) {
+        expr->accept(*this);
+        return _stack.top();
+    }
+
+    void visit(std::shared_ptr<hcvc::OperatorApplication> term) override {
+        std::vector<hcvc::Expr> sanitized_args;
+        for (const auto& arg : term->arguments()) {
+            arg->accept(*this);
+            sanitized_args.push_back(_stack.top());
+            _stack.pop();
+        }
+        auto sanitized_term = term->context().apply(term->operat0r()->name(), sanitized_args);
+        auto op_app = std::dynamic_pointer_cast<hcvc::OperatorApplication>(sanitized_term);
+
+        // if (op_app) {
+        //     const auto& op_name = op_app->operat0r()->name();
+        //     if (op_name == "sum" || op_name == "sum_range") {
+        //         // TODO: Implement get_variable_for_sum_expr in AggregationManager
+        //         // if (auto sub = _agg_mgr.get_variable_for_sum_expr(op_app)) {
+        //         //     _stack.push(*sub);
+        //         //     return;
+        //         // }
+        //     }
+        //     if (op_name == "select" || op_name == "[]") {
+        //         // TODO: Implement get_accessor_for_select_expr in QuantifierManager
+        //         // if (auto sub = _q_mgr.get_accessor_for_select_expr(op_app)) {
+        //         //     _stack.push(*sub);
+        //         //     return;
+        //         // }
+        //     }
+        // }
+        _stack.push(sanitized_term);
+    }
+    
+    void visit(std::shared_ptr<hcvc::Constant> term) override {
+        if (term->is_variable_constant()) {
+            auto var_const = std::dynamic_pointer_cast<hcvc::VariableConstant>(term);
+            auto base_variable = var_const->variable();
+            _stack.push(hcvc::VariableConstant::create(base_variable, 0, term->context()));
+        } else {
+            _stack.push(term);
+        }
+    }
+
+    void visit(std::shared_ptr<hcvc::IntegerLiteral> term) override { _stack.push(term); }
+    void visit(std::shared_ptr<hcvc::BooleanLiteral> term) override { _stack.push(term); }
+    
+    void visit(std::shared_ptr<hcvc::QuantifiedFormula> term) override {
+        term->formula()->accept(*this);
+        auto new_body = _stack.top();
+        _stack.pop();
+        
+        std::vector<hcvc::Expr> sanitized_vars;
+        for (const auto& qvar : term->quantifiers()) {
+             qvar->accept(*this);
+             sanitized_vars.push_back(_stack.top());
+             _stack.pop();
+        }
+
+        _stack.push(hcvc::QuantifiedFormula::create(
+            term->quantifier_kind(), sanitized_vars, new_body, term->context()
+        ));
+    }
+
+    void visit(std::shared_ptr<hcvc::PredicateApplication> term) override { _stack.push(term); }
+    void visit(std::shared_ptr<hcvc::ArrayLiteral> term) override { _stack.push(term); }
+
+private:
+    AggregationManager& _agg_mgr;
+    QuantifierManager& _q_mgr;
+    std::stack<hcvc::Expr> _stack;
+};
+
+//*-- AssertionAnalyzer
+class AssertionAnalyzer {
+private:
+    bool is_assertion_property(const hcvc::Expr& expr) const {
+        if (expr->kind() == hcvc::TermKind::QuantifiedFormula) return true;
+        auto ops = hcvc::get_operations(expr);
+        for (const auto* op : ops) {
+            const auto& op_name = op->name();
+            if (op_name == "sum" || op_name == "sum_range" || op_name == "select" || op_name == "[]") {
+                return true;
+            }
+        }
+        if (expr->kind() == hcvc::TermKind::OpApp) {
+             auto op_app = std::dynamic_pointer_cast<hcvc::OperatorApplication>(expr);
+             if (op_app->operat0r()->name() == "=") return true;
+        }
+        return false;
+    }
+
+    std::vector<hcvc::Expr> extract_potential_hints(const hcvc::Expr& phi) const {
+        std::vector<hcvc::Expr> hints;
+        if (phi->kind() == hcvc::TermKind::OpApp) {
+            auto op_app = std::dynamic_pointer_cast<hcvc::OperatorApplication>(phi);
+            if (op_app->operat0r()->name() == "and") {
+                for (const auto& conjunct : op_app->arguments()) {
+                    if (conjunct->kind() == hcvc::TermKind::OpApp) {
+                        auto inner = std::dynamic_pointer_cast<hcvc::OperatorApplication>(conjunct);
+                        if (inner->operat0r()->name() == "not" && inner->arguments().size() == 1) {
+                            hints.push_back(inner->arguments().at(0));
+                        }
+                    }
+                    if (conjunct->kind() == hcvc::TermKind::QuantifiedFormula) {
+                        hints.push_back(conjunct);
+                    }
+                }
+            }
+        }
+        if (hints.empty() && phi->kind() == hcvc::TermKind::OpApp) {
+             auto op_app = std::dynamic_pointer_cast<hcvc::OperatorApplication>(phi);
+             if (op_app->operat0r()->name() == "not" && op_app->arguments().size() == 1) {
+                hints.push_back(op_app->arguments().at(0));
+             }
+        }
+        return hints;
+    }
+
+public:
+    std::map<const hcvc::Predicate*, std::set<std::shared_ptr<HintTemplate>>>
+    analyze(const hcvc::ClauseSet& clauses, 
+            AggregationManager& agg_mgr, 
+            QuantifierManager& q_mgr,
+            const std::set<const hcvc::Predicate*>& all_predicates) {
+        
+        std::map<const hcvc::Predicate*, std::set<std::shared_ptr<HintTemplate>>> final_templates;
+        ExprToTemplateConverter converter;
+
+        // Step 1: Collect all unique raw hints from all goal clauses into one master set.
+        std::set<hcvc::Expr> unique_raw_hints;
+        for (const auto* clause : clauses.to_set()) {
+            if (clause->is_goal()) {
+                std::vector<hcvc::Expr> potential_hints = extract_potential_hints(clause->phi_expr());
+                for (const auto& hint : potential_hints) {
+                    if (is_assertion_property(hint)) {
+                        unique_raw_hints.insert(hint);
+                    }
+                }
+            }
+        }
+        
+        // Step 2: Process these hints into a final set of templates.
+        std::set<std::shared_ptr<HintTemplate>> processed_templates;
+        HintCanonicalizer canonicalizer(agg_mgr, q_mgr);
+        
+        std::cerr << "[DEBUG] AssertionAnalyzer: Processing " << unique_raw_hints.size() << " unique raw hints...\n";
+        for (const auto& raw_hint : unique_raw_hints) {
+            // hcvc::Expr canonical_hint = canonicalizer.process(raw_hint);
+            std::shared_ptr<HintTemplate> ht = converter.convert(raw_hint);
+            
+            if (ht) {
+                // 📣 NEW: Print all stages of hint processing for debugging.
+                std::cerr << "  -> Processed Hint:\n";
+                std::cerr << "     Raw:           " << raw_hint << "\n";
+                // std::cerr << "     Canonicalized:   " << canonical_hint << "\n";
+                std::cerr << "     Structured Template:\n";
+                print_hint_template(ht, 7); // Calls the pretty-printer helper function
+
+                processed_templates.insert(ht);
+            }
+        }
+        
+        // Step 3: Assign the entire set of processed hints to every predicate.
+        for (const auto* predicate : all_predicates) {
+            final_templates[predicate] = processed_templates;
+        }
+
+        std::cerr << "[DEBUG] AssertionAnalyzer: Analysis complete. Found " 
+                  << processed_templates.size()
+                  << " unique hint template(s) for " 
+                  << final_templates.size() << " predicate(s).\n";
+
+        return final_templates;
+    }
+};
+
+const std::set<std::shared_ptr<HintTemplate>>& 
+NewAttributeSynthesizer::get_hint_templates(const hcvc::Predicate* p) const {
+    if (_hint_templates.count(p)) {
+        return _hint_templates.at(p);
+    }
+    // Return a static empty set if no hints exist for this predicate
+    static const std::set<std::shared_ptr<HintTemplate>> empty_set;
+    return empty_set;
+}
   unsigned long counterforpattern = 0;
 
   //*-- TermPattern
@@ -37,10 +266,6 @@ namespace tapis::HornICE::qdt {
     hcvc::Expr _formula;
   };
 
-  bool is_var_cnst(const hcvc::Expr &term) {
-    return term->kind() == hcvc::TermKind::Constant &&
-           std::dynamic_pointer_cast<hcvc::Constant>(term)->is_variable_constant();
-  }
 
   bool is_integer_literal(const hcvc::Expr &term) {
     return term->kind() == hcvc::TermKind::IntegerLiteral;
@@ -294,7 +519,9 @@ void visit(std::shared_ptr<hcvc::OperatorApplication> term) override {
                                                   return !t->type()->is_bool() && !t->type()->is_array();
                                                 });
       if(!left_contains_const && !right_contains_const && args_are_bool_or_array) {
-        _attribute_pattern.push_back(Term2Pattern(term->context()).analyze(term));
+        _attribute_pattern.push_back(Term2Pattern(term->context()).analyze(term));  
+        //  copy this class and apply         _attribute_pattern.push_back(term);  
+
       }
     }
 }
@@ -321,6 +548,104 @@ void visit(std::shared_ptr<hcvc::OperatorApplication> term) override {
     std::vector<hcvc::Expr> _potential_data_terms;
   private:
   };
+
+std::shared_ptr<HintTemplate> ExprToTemplateConverter::convert(const hcvc::Expr& expr) {
+    _stack = {};
+    _quantified_vars_in_scope.clear();
+    expr->accept(*this);
+
+    if (_stack.empty()) {
+        return nullptr;
+    }
+
+    auto result = _stack.top();
+    _stack.pop();
+
+    if (std::holds_alternative<std::shared_ptr<HintTemplate>>(result)) {
+        // It was a complex expression (OpApp, QuantFormula), return the generated template directly.
+        return std::get<std::shared_ptr<HintTemplate>>(result);
+    } else {
+        // It was a simple leaf expression (Constant, Literal).
+        // Wrap the resulting simple parameter in a new HintTemplate.
+        auto ht = std::make_shared<HintTemplate>();
+        ht->simple_params.push_back(std::get<TemplateParameter>(result));
+        return ht;
+    }
+}
+
+void ExprToTemplateConverter::visit(std::shared_ptr<hcvc::OperatorApplication> term) {
+    auto ht = std::make_shared<HintTemplate>();
+    ht->op = term->operat0r();
+
+    for (const auto& arg : term->arguments()) {
+        arg->accept(*this);
+        auto result = _stack.top();
+        _stack.pop();
+
+        if (std::holds_alternative<std::shared_ptr<HintTemplate>>(result)) {
+            ht->nested_params.push_back(std::get<std::shared_ptr<HintTemplate>>(result));
+        } else {
+            ht->simple_params.push_back(std::get<TemplateParameter>(result));
+        }
+    }
+    _stack.push(ht);
+}
+
+// ⚙️ This method now correctly manages the quantifier scope.
+void ExprToTemplateConverter::visit(std::shared_ptr<hcvc::QuantifiedFormula> term) {
+    auto ht = std::make_shared<HintTemplate>();
+    
+    // Step 1: Add quantified variables (as Expr) to the current scope.
+    for (const auto& qvar_expr : term->quantifiers()) {
+        _quantified_vars_in_scope.insert(qvar_expr);
+    }
+
+    // Step 2: Recursively process the body of the formula within this new scope.
+    term->formula()->accept(*this);
+    auto result = _stack.top();
+    _stack.pop();
+
+    // Step 3: Exit the scope by removing the variables.
+    for (const auto& qvar_expr : term->quantifiers()) {
+        _quantified_vars_in_scope.erase(qvar_expr);
+    }
+
+    if (std::holds_alternative<std::shared_ptr<HintTemplate>>(result)) {
+        ht->nested_params.push_back(std::get<std::shared_ptr<HintTemplate>>(result));
+    } else {
+        ht->simple_params.push_back(std::get<TemplateParameter>(result));
+    }
+    _stack.push(ht);
+}
+
+// ⚙️ This method now correctly identifies the role of any constant, including quantifiers.
+void ExprToTemplateConverter::visit(std::shared_ptr<hcvc::Constant> term) {
+    VariableRole role = VariableRole::UNKNOWN;
+    
+    // Check the quantifier scope first! This is the key context-aware step.
+    if (_quantified_vars_in_scope.count(term)) {
+        role = VariableRole::QUANTIFIER;
+    } 
+    // Else, if it's a program variable, get its general role.
+    else if (term->is_variable_constant()) {
+        auto var = std::dynamic_pointer_cast<hcvc::VariableConstant>(term)->variable();
+        role = get_variable_role(var);
+    }
+    _stack.push(TemplateParameter{term, role});
+}
+
+void ExprToTemplateConverter::visit(std::shared_ptr<hcvc::IntegerLiteral> term) {
+    _stack.push(TemplateParameter{term, VariableRole::LITERAL});
+}
+void ExprToTemplateConverter::visit(std::shared_ptr<hcvc::BooleanLiteral> term) {
+    _stack.push(TemplateParameter{term, VariableRole::LITERAL});
+}
+void ExprToTemplateConverter::visit(std::shared_ptr<hcvc::PredicateApplication> term) { 
+    _stack.push(TemplateParameter{term, VariableRole::UNKNOWN}); 
+}
+void ExprToTemplateConverter::visit(std::shared_ptr<hcvc::ArrayLiteral> term) { 
+    _stack.push(TemplateParameter{term, VariableRole::UNKNOWN}); 
+}
 
   //*-- PatternEnumerator
   class PatternEnumerator: public Enumerator {
@@ -495,6 +820,21 @@ void NewAttributeSynthesizer::setup() {
     ProgramTermAnalyzer pta;
     // This has to be performed anyway to obtain constants in the program
     pta.analyze(get_outputs().clauses);
+
+    AssertionAnalyzer aa;
+    this->_hint_templates = aa.analyze(get_outputs().clauses, _aggregation_manager, _quantifier_manager, _predicates);
+
+    // ⚙️ DEBUG STEP (from last time)
+    std::cerr << "\n[DEBUG] --- HINT MAP STATE AFTER ANALYSIS ---\n";
+    if (this->_hint_templates.empty()) {
+        std::cerr << "[DEBUG] The _hint_templates map is completely empty.\n";
+    } else {
+        for (auto const& [predicate, templates] : this->_hint_templates) {
+            std::cerr << "[DEBUG] Hints stored for predicate '" << predicate->name() 
+                      << "': " << templates.size() << " templates.\n";
+        }
+    }
+    std::cerr << "[DEBUG] -------------------------------------\n\n";
 
     // set the array size bound to the max integer constant in the program + 1
     if(!pta._integer_values.empty()) {
