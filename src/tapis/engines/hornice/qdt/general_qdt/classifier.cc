@@ -35,7 +35,7 @@ std::string role_to_string(tapis::HornICE::qdt::VariableRole role) {
                          AggregationManager &aggregation_manager)
       : qdt::Classifier(clause_set, std::move(predicates), quantifier_manager, aggregation_manager),
         _working_set(nullptr),
-        _aggregation_manager(aggregation_manager) {  // Initialize the member
+        _aggregation_manager(aggregation_manager) { 
               
     _alpha = get_options().ice.qdt.hint_score_alpha;
 
@@ -132,15 +132,10 @@ void get_all_subtemplates(const std::shared_ptr<HintTemplate>& ht, std::vector<s
     }
 }
 double ParamSimilarity(const TemplateParameter& attr_param, const TemplateParameter& hint_param) {
-    // 📣 Initial debug print for the comparison
+    //debug print for the comparison
     // std::cerr << "        [ParamSim] Comparing '" << attr_param.expr << "' (Role: " << role_to_string(attr_param.role) 
     //           << ") vs '" << hint_param.expr << "' (Role: " << role_to_string(hint_param.role) << ")\n";
 
-    // // A fast path for identical expressions
-    // if (attr_param.expr == hint_param.expr) {
-    //     std::cerr << "        [ParamSim] -> Result: 1.0 (Exact Expr Match)\n";
-    //     return 1.0;
-    // }
 
     // Case 1: Both parameters are variables
     if (is_var_cnst(attr_param.expr) && is_var_cnst(hint_param.expr)) {
@@ -204,7 +199,6 @@ double NodeSimilarity(const std::shared_ptr<HintTemplate>& attr_template, const 
 
     if (!attr_template || !hint_template) return 0.0;
     
-    // Print the nodes being compared
     // std::cerr << indent << "[NodeSim] Comparing: " 
               // << (attr_template->op ? attr_template->op->name() : "Leaf") << " vs " 
               // << (hint_template->op ? hint_template->op->name() : "Leaf") << "\n";
@@ -243,39 +237,6 @@ double NodeSimilarity(const std::shared_ptr<HintTemplate>& attr_template, const 
 }
 
 
-// double CalculateHintScore(const std::shared_ptr<HintTemplate>& attr_template, const std::shared_ptr<HintTemplate>& hint_template) {
-//     if (!attr_template || !hint_template) return 0.0;
-
-//     std::vector<std::shared_ptr<HintTemplate>> attr_concepts;
-//     get_all_subtemplates(attr_template, attr_concepts);
-
-//     std::vector<std::shared_ptr<HintTemplate>> hint_concepts;
-//     get_all_subtemplates(hint_template, hint_concepts);
-    
-//     std::cerr << "    [HintScore] Attr Concepts: " << attr_concepts.size() << ", Hint Concepts: " << hint_concepts.size() << "\n";
-//     if (attr_concepts.empty() || hint_concepts.empty()) return 0.0;
-
-//     double total_weighted_score = 0.0;
-//     double total_weight = 0.0;
-
-//     for (const auto& attr_concept : attr_concepts) {
-//         double best_match_for_this_concept = 0.0;
-//         for (const auto& hint_concept : hint_concepts) {
-//             best_match_for_this_concept = std::max(best_match_for_this_concept, NodeSimilarity(attr_concept, hint_concept));
-//         }
-        
-//         double weight = get_op_weight(attr_concept->op);
-//         total_weighted_score += best_match_for_this_concept * weight;
-//         total_weight += weight;
-//         std::cerr << "    [HintScore]   -> Best match for Attr component '" << (attr_concept->op ? attr_concept->op->name() : "Quant") 
-//                   << "' was " << best_match_for_this_concept << " (Weight: " << weight << ")\n";
-//     }
-
-//     double final_score = (total_weight > 0) ? (total_weighted_score / total_weight) : 0.0;
-//     std::cerr << "    [HintScore] -> Final Weighted Score: " << final_score << "\n";
-//     return final_score;
-// }
-
 void get_all_variables_from_template(const std::shared_ptr<HintTemplate>& ht, std::set<const hcvc::Variable*>& vars) {
     if (!ht) return;
     for (const auto& param : ht->simple_params) {
@@ -313,7 +274,7 @@ double CalculateStructuralSimilarity(const std::shared_ptr<HintTemplate>& attr_t
         total_weighted_score += best_match_for_this_concept * weight;
         total_weight += weight;
 
-        // 📣 This print shows the score for each component of the attribute.
+        //print shows the score for each component of the attribute.
         // std::cerr << "    [StructSim]   -> Best match for Attr component '" 
         //           << (attr_concept->op ? attr_concept->op->name() : "Leaf") 
         //           << "' was " << std::fixed << std::setprecision(3) << best_match_for_this_concept 
@@ -339,14 +300,6 @@ const std::shared_ptr<HintTemplate>& find_core_hint(const std::shared_ptr<HintTe
 
 double CalculateHintScore(const std::shared_ptr<HintTemplate>& attr_template, const std::shared_ptr<HintTemplate>& hint_template) {
     if (!attr_template || !hint_template) return 0.0;
-
-    // // --- High-level context ---
-    // std::cerr << "\n  [HintScore] <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\n";
-    // std::cerr << "  [HintScore] Comparing Attribute Template:\n";
-    // print_hint_template(attr_template, 4);
-    // std::cerr << "  [HintScore] Against Hint Template:\n";
-    // print_hint_template(hint_template, 4);
-    // std::cerr << "  [HintScore] --------------------------------------------------------\n";
 
 // 1. Calculate the flexible, component-based Structural Similarity
     double structural_score = CalculateStructuralSimilarity(attr_template, hint_template);
@@ -380,7 +333,7 @@ double CalculateHintScore(const std::shared_ptr<HintTemplate>& attr_template, co
     // std::cerr << "    [HintScore] -> Structurally-Aware Overlap: " << variable_overlap_score << "\n";
 
     // 3. Combine the flexible structural score and the strict overlap score
-    const double beta = 0.5; // 80% weight to flexible structure, 20% to strict overlap
+    const double beta = 0.5; // 50% weight to flexible structure, 20% to strict overlap
     double final_score = (beta * structural_score) + ((1 - beta) * variable_overlap_score);
 
     // std::cerr << "    [HintScore] ===> Final Blended Score: " << std::fixed << std::setprecision(3) << final_score << "\n";
@@ -402,8 +355,6 @@ double CalculateHintScore(const std::shared_ptr<HintTemplate>& attr_template, co
       if(!_attr_synthesizer->generate_attributes(_working_set)) {
         return std::nullopt;
       }
-      std::cout << "I am here \n";
-
     }
 
     // Pre-processing loop to translate and cache templates for all attributes.

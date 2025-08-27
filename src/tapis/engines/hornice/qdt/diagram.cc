@@ -42,7 +42,6 @@ const std::list<const Diagram *> &DiagramManager::get_diagrams(const hcvc::State
             }
         }
         if(has_array) {
-            // This is the new, refactored combination generation logic 🚀
             std::list<std::map<const hcvc::Variable *, unsigned long>> combinations;
             
             // 1. Group QuantifierInfo objects by their underlying shared quantifier variable.

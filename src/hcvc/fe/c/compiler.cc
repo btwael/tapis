@@ -213,9 +213,6 @@ namespace hcvc::fe::c {
   auto array_sort = _context.type_manager().get_array_type(compile_type(var_type->getElementType(), _context));
   auto variable = hcvc::Variable::create(var_decl->getNameAsString(), array_sort, _context);
   
-  // =========================================================================
-  // == THIS IS THE CORRECTED LOGIC ==========================================
-  // =========================================================================
   hcvc::Expr size;
   if (auto *vla_type = clang::dyn_cast<clang::VariableArrayType>(var_type)) {
       // It's a Variable Length Array, e.g., int arr[N];
@@ -696,9 +693,7 @@ namespace hcvc::fe::c {
       } else if(callee->getName() == "_return") {
         return hcvc::VariableConstant::create(function->return_variable(), 0, _context);
       } else {
-      // =========================================================================
-      // == THIS IS THE CORRECTED LINE ===========================================
-      // =========================================================================
+
       auto called_function = _module.get_function(callee->getName().str());
       this->then(called_function->precondition_pred(), arguments);
       this->assume(called_function->precondition_pred(), arguments);

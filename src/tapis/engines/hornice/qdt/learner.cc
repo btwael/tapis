@@ -70,7 +70,6 @@ Learner::Learner(hcvc::Module *module, const hcvc::ClauseSet &clauses,
         more_quantifier_variable = true;
         _quantifier_manager->increase(1);
         
-        // Add the necessary resetup for the aggregation manager
         _aggregation_manager->resetup();
         _diagram_manager.clear();
         _diagram_set = DiagramPartialReachabilityGraph();

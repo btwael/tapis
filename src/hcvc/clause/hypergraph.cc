@@ -62,12 +62,9 @@ namespace hcvc {
       }
     }
 
-    // We will produce newclause = S(c)... ^ phi_d => ...c <==> R(a)... ^ Q(b)... ^ phi_b ^ phi_a => ...c
 
-    std::vector<Expr> S_c = Q_b; // we will add R(a)... later
-    std::vector<Expr> phi_c = phi_b; // we will add more things
-    // before adding the other parts of subclause to the new clause, we have to ensure that the used
-    // variable names are all different from those used on clause. We must rename them if necessary.
+    std::vector<Expr> S_c = Q_b; 
+    std::vector<Expr> phi_c = phi_b;
     auto used = get_used_var_indexes(clause->to_formula());
     auto sub_used = get_used_var_indexes(subclause->to_formula());
     std::map<Expr, Expr> sub_map;
@@ -676,97 +673,15 @@ std::vector<HyperGraph::LinearCombinationLoop> HyperGraph::find_linear_combinati
     return results;
 }
 
-// Debug helper function to print detected loops
-void HyperGraph::debug_print_linear_loops(const std::vector<HyperGraph::LinearCombinationLoop>& loops) const {
-    std::cout << "=== DETECTED LINEAR COMBINATION LOOPS ===" << std::endl;
-    for (size_t i = 0; i < loops.size(); ++i) {
-        const auto& loop = loops[i];
-        std::cout << "Loop " << i << ":" << std::endl;
-        std::cout << "  Predicate: " << loop.loop_predicate->name() << std::endl;
-        std::cout << "  Sum updates: " << loop.sum_updates.size() << std::endl;
-        
-        for (size_t j = 0; j < loop.sum_updates.size(); ++j) {
-            const auto& update = loop.sum_updates[j];
-            std::cout << "    Update " << j << ": " << update.sum_var->name() 
-                     << " (param index " << update.sum_var_arg_idx << ")" << std::endl;
-            std::cout << "      Terms: " << update.terms.size() << std::endl;
-            
-            for (size_t k = 0; k < update.terms.size(); ++k) {
-                const auto& term = update.terms[k];
-                std::cout << "        Term " << k << ": " 
-                         << (term.is_positive ? "+" : "-") << " ";
-                
-                // Enhanced coefficient printing
-                if (term.coefficient) {
-                    if (term.coefficient->kind() == TermKind::Constant) {
-                        auto const_coeff = std::dynamic_pointer_cast<Constant>(term.coefficient);
-                        if (const_coeff && !const_coeff->is_variable_constant()) {
-                            // It's a literal constant - try to print it
-                            std::cout << "coeff(literal)";
-                        } else {
-                            std::cout << "coeff(var)";
-                        }
-                    } else {
-                        std::cout << "coeff(expr)";
-                    }
-                    std::cout << " * ";
-                } else {
-                    std::cout << "coeff(null) * ";
-                }
-                
-                // Enhanced variable printing  
-                if (term.variable) {
-                    if (term.variable->kind() == TermKind::Constant) {
-                        auto vc = std::dynamic_pointer_cast<VariableConstant>(term.variable);
-                        if (vc) {
-                            std::cout << vc->variable()->name() << "[" << vc->index() << "]";
-                        } else {
-                            auto const_var = std::dynamic_pointer_cast<Constant>(term.variable);
-                            if (const_var && !const_var->is_variable_constant()) {
-                                std::cout << "literal_const";
-                            } else {
-                                std::cout << "unknown_const";
-                            }
-                        }
-                    } else if (term.variable->kind() == TermKind::OpApp) {
-                        auto op_app = std::dynamic_pointer_cast<OperatorApplication>(term.variable);
-                        if (op_app) {
-                            std::cout << "expr(" << op_app->operat0r()->name() << ")";
-                        } else {
-                            std::cout << "expr(unknown)";
-                        }
-                    } else {
-                        std::cout << "var(other_type)";
-                    }
-                } else {
-                    std::cout << "var(null)";
-                }
-                std::cout << std::endl;
-            }
-        }
-        std::cout << std::endl;
-    }
-    std::cout << "============================================" << std::endl;
-}
-
 void HyperGraph::simplify(hcvc::Context &context, Module* owner) {
 
-    std::cout << "--- CLAUSES BEFORE TRANSFORMATION ---" << std::endl;
-    for (const auto* clause : this->to_set()) {
-        clause->dump();
-    }
-    std::cout << "------------------------------------" << std::endl;
+
     
-    // Run our NEW linear combination transformation instead of old subtraction loops
+    // Run our NEW linear combination transformation
     transform_linear_combination_loops(context, owner);
     
-    std::cout << "--- CLAUSES AFTER TRANSFORMATION ---" << std::endl;
-    for (const auto* clause : this->to_set()) {
-        clause->dump();
-    }
-    std::cout << "------------------------------------" << std::endl;
 
-    // Now we can simplify the clauses based on the new structure
+    //we can simplify the clauses based on the new structure
     std::set<Weakness> weaknesses;
     for(auto [weakness, _]: _weakness_clause_map) {
       weaknesses.insert(weakness);
