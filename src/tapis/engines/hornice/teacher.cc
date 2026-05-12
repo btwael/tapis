@@ -53,29 +53,47 @@ namespace tapis::HornICE {
         auto array_size_expr = model->eval(hcvc::to_smtface(pred_app->arguments()[index_of_size_variable]));
         auto arr_size = std::stol(std::dynamic_pointer_cast<smtface::core::Value>(array_size_expr)->raw());
         std::vector<hcvc::Expr> array;
-        for(long j = 0; j < arr_size; j++) {
-          z3::expr v(z3m.ctx());
-          if(interps.count(std::dynamic_pointer_cast<hcvc::VariableConstant>(pred_app->arguments()[i])->name()) > 0) {
-            v = z3m.eval(
-                (interps.at(std::dynamic_pointer_cast<hcvc::VariableConstant>(pred_app->arguments()[i])->name()))(j));
-          } else {
-            if(arr_type->element_type()->is_int()) {
-              v = z3m.ctx().int_val(0);
-            } else if(arr_type->element_type()->is_bool()) {
-              v = z3m.ctx().bool_val(false);
-            }
+        auto array_var = std::dynamic_pointer_cast<hcvc::VariableConstant>(pred_app->arguments()[i]);
+        auto default_value = [&]() -> z3::expr {
+          if(arr_type->element_type()->is_int()) {
+            return z3m.ctx().int_val(0);
           }
+          if(arr_type->element_type()->is_bool()) {
+            return z3m.ctx().bool_val(false);
+          }
+          return z3m.ctx().int_val(0);
+        };
+        for(long j = 0; j < arr_size; j++) {
+          z3::expr v = default_value();
+          if(array_var != nullptr && interps.count(array_var->name()) > 0) {
+            v = z3m.eval((interps.at(array_var->name()))(j));
+          } else if(array_var != nullptr) {
+            z3::sort index_sort = z3m.ctx().int_sort();
+            z3::sort element_sort = arr_type->element_type()->is_bool() ? z3m.ctx().bool_sort() : z3m.ctx().int_sort();
+            z3::sort array_sort = z3m.ctx().array_sort(index_sort, element_sort);
+            z3::expr array_expr = z3m.ctx().constant(array_var->name().c_str(), array_sort);
+            v = z3m.eval(z3::select(array_expr, z3m.ctx().int_val(static_cast<int64_t>(j))));
+          }
+
           if(v.is_bool()) {
             if(v.is_true()) {
               array.push_back(pred_app->context().get_true());
             } else {
               array.push_back(pred_app->context().get_false());
             }
-          } else if(v.is_int()) {
+          } else if(v.is_int() && v.is_numeral()) {
             array.push_back(
                 hcvc::IntegerLiteral::get(std::to_string(v.get_numeral_int()),
                                           dynamic_cast<const hcvc::ArrayType *>(param->type())->element_type(),
                                           pred_app->context()));
+          } else {
+            if(arr_type->element_type()->is_int()) {
+              array.push_back(hcvc::IntegerLiteral::get("0",
+                                                        dynamic_cast<const hcvc::ArrayType *>(param->type())->element_type(),
+                                                        pred_app->context()));
+            } else if(arr_type->element_type()->is_bool()) {
+              array.push_back(pred_app->context().get_false());
+            }
           }
         }
         values[param] = hcvc::ArrayLiteral::get(array, param->type(), pred_app->context());

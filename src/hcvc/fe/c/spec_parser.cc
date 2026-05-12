@@ -2,6 +2,8 @@
 // Copyright (c) 2023 Wael-Amine Boutglay
 //
 
+#include <cstdlib>
+#include <iostream>
 #include <string>
 #include "sexpresso.hpp"
 #include "hcvc/logic/term.hh"
@@ -107,13 +109,15 @@ namespace hcvc::fe::c {
           } else if(is_number(value)) {
             return hcvc::IntegerLiteral::get(value, _context.type_manager().int_type(), _context);
           } else {
-            auto parameter = _scope->get_variable_by_name(value);
-            const hcvc::Variable *variable = parameter;
-            if(variable == nullptr){
-              return scope[value];
-            } else {
-              return hcvc::VariableConstant::create(variable, 0, _context);
+            if(scope.count(value) > 0) {
+              return scope.at(value);
             }
+            auto variable = _scope->get_variable_by_name(value);
+            if(variable != nullptr) {
+              return _scope->get(variable);
+            }
+            std::cerr << "Error: Unknown identifier '" << value << "' in specification string." << std::endl;
+            exit(1);
           }
       }
       return _context.get_false();

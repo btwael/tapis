@@ -156,6 +156,9 @@ namespace hcvc::fe::c {
     }
 
     bool compile(clang::Stmt *stmt, hcvc::Function *function) {
+      if(stmt == nullptr) {
+        return false;
+      }
       if(stmt->getStmtClass() == clang::Stmt::BreakStmtClass) {
         return compile((clang::BreakStmt *) stmt, function);
       } else if(stmt->getStmtClass() == clang::Stmt::CompoundStmtClass) {
@@ -172,7 +175,13 @@ namespace hcvc::fe::c {
         return compile((clang::WhileStmt *) stmt, function);
       } else { // expression statement
         // TODO: this else may take other stuff other than Expression Statement; add other cases
-        compile((clang::Expr *) stmt, function);
+        auto expr = clang::dyn_cast<clang::Expr>(stmt);
+        if(expr == nullptr) {
+          stmt->dump();
+          std::cout << "IMPL-MISSING in Stmt compiler: Unhandled statement type." << std::endl;
+          exit(10);
+        }
+        compile(expr, function);
         return false;
       }
     }
@@ -200,7 +209,17 @@ namespace hcvc::fe::c {
           auto var_type = var_decl->getType()->getAsArrayTypeUnsafe();
           auto array_sort = _context.type_manager().get_array_type(compile_type(var_type->getElementType(), _context));
           auto variable = hcvc::Variable::create(var_decl->getNameAsString(), array_sort, _context);
-          auto size = compile(((clang::VariableArrayType *) var_type)->getSizeExpr(), function);
+          hcvc::Expr size;
+          if(auto vla_type = clang::dyn_cast<clang::VariableArrayType>(var_type)) {
+            size = compile(vla_type->getSizeExpr(), function);
+          } else if(auto constant_array_type = clang::dyn_cast<clang::ConstantArrayType>(var_type)) {
+            auto size_str = llvm::toString(constant_array_type->getSize(), 10, true);
+            size = hcvc::IntegerLiteral::get(size_str, _context.type_manager().int_type(), _context);
+          } else {
+            var_type->dump();
+            std::cout << "IMPL-MISSING in DeclStmt compiler: Unhandled array type." << std::endl;
+            exit(10);
+          }
           bool is_size_set = false;
           if(size->kind() == hcvc::TermKind::Constant) {
             auto cnst = std::dynamic_pointer_cast<hcvc::Constant>(size);
@@ -601,18 +620,27 @@ namespace hcvc::fe::c {
     }
 
     hcvc::Expr compile(clang::CallExpr *expr, hcvc::Function *function = nullptr) {
-      if(expr->getDirectCallee()->getName() == "assert_exp") {
-        std::string str = ((clang::StringLiteral *) ((clang::ImplicitCastExpr *) ((clang::ImplicitCastExpr *) *(expr->arguments().begin()))->getSubExpr()))->getString().str();
-        auto frml = SpecParser(str, &this->scope(), _context).parse();
-        this->assure(frml, hcvc::Weakness::assertion_violation);
-        this->assume(frml);
-        return _context.get_false();
+      auto callee = expr->getDirectCallee();
+      if(callee == nullptr) {
+        std::cout << "Error: Indirect function calls are not supported." << std::endl;
+        exit(1);
       }
-      if(expr->getDirectCallee()->getName() == "assume_exp") {
-        std::string str = ((clang::StringLiteral *) ((clang::ImplicitCastExpr *) ((clang::ImplicitCastExpr *) *(expr->arguments().begin()))->getSubExpr()))->getString().str();
-        auto frml = SpecParser(str, &this->scope(), _context).parse();
-        this->assume(frml);
-        return _context.get_false();
+      auto callee_name = callee->getName();
+      if(callee_name == "assert_exp" || callee_name == "assume_exp") {
+        if(expr->getNumArgs() > 0) {
+          auto arg = expr->getArg(0)->IgnoreImplicit();
+          if(auto str_literal = clang::dyn_cast<clang::StringLiteral>(arg)) {
+            std::string str = str_literal->getString().str();
+            auto frml = SpecParser(str, &this->scope(), _context).parse();
+            if(callee_name == "assert_exp") {
+              this->assure(frml, hcvc::Weakness::assertion_violation);
+            }
+            this->assume(frml);
+            return _context.get_false();
+          }
+        }
+        std::cout << "Error: " << callee_name.str() << " expects a string literal argument." << std::endl;
+        exit(1);
       }
       std::vector<hcvc::Expr> arguments;
       for(auto arg: expr->arguments()) {
@@ -628,13 +656,13 @@ namespace hcvc::fe::c {
           }
         }
       }
-      if(expr->getDirectCallee()->getName() == "assert") {
+      if(callee->getName() == "assert") {
         // emit clauses (assertion violated)
         this->assure(arguments[0], hcvc::Weakness::assertion_violation);
         this->assume(arguments[0]);
-      } else if(expr->getDirectCallee()->getName() == "assume") {
+      } else if(callee->getName() == "assume") {
         this->assume(arguments[0]);
-      } else if(expr->getDirectCallee()->getName() == "_exists") {
+      } else if(callee->getName() == "_exists") {
         // TODO: the problem with this is variable declaration
         std::vector<hcvc::Expr> vars;
         for(unsigned int k = 0; k < arguments.size() - 1; k++) {
@@ -642,7 +670,7 @@ namespace hcvc::fe::c {
         }
         return hcvc::QuantifiedFormula::create(hcvc::Quantifier::Exists, vars, arguments[arguments.size() - 1],
                                                _context);
-      } else if(expr->getDirectCallee()->getName() == "_forall") {
+      } else if(callee->getName() == "_forall") {
         // TODO: the problem with this is variable declaration
         std::vector<hcvc::Expr> vars;
         for(unsigned int k = 0; k < arguments.size() - 1; k++) {
@@ -650,12 +678,12 @@ namespace hcvc::fe::c {
         }
         return hcvc::QuantifiedFormula::create(hcvc::Quantifier::ForAll, vars, arguments[arguments.size() - 1],
                                                _context);
-      } else if(expr->getDirectCallee()->getName() == "_implies") {
+      } else if(callee->getName() == "_implies") {
         return _context.apply("=>", arguments);
-      } else if(expr->getDirectCallee()->getName() == "_return") {
+      } else if(callee->getName() == "_return") {
         return hcvc::VariableConstant::create(function->return_variable(), 0, _context);
       } else {
-        auto function = _module.get_function(expr->getDirectCallee()->getName().str());
+        auto function = _module.get_function(callee->getName().str());
         // emit clauses (input satisfies function precondition)
         this->then(function->precondition_pred(), arguments);
         // add pre to the clause
@@ -801,6 +829,9 @@ namespace hcvc::fe::c {
         : _context(context), _module(module), _states(std::move(states)) {}
 
     void compile(clang::Stmt *stmt, hcvc::Function *function) {
+      if(stmt == nullptr) {
+        return;
+      }
       for(auto state: _states) {
         if(stmt->getStmtClass() == clang::Stmt::CompoundStmtClass) {
           state->compile((clang::CompoundStmt *) stmt, function);
@@ -814,7 +845,13 @@ namespace hcvc::fe::c {
           state->compile((clang::WhileStmt *) stmt, function);
         } else { // expression statement
           // TODO: this else may take other stuff other than Expression Statement; add other cases
-          state->compile((clang::Expr *) stmt, function);
+          auto expr = clang::dyn_cast<clang::Expr>(stmt);
+          if(expr == nullptr) {
+            stmt->dump();
+            std::cout << "IMPL-MISSING in MultiStateCompiler: Unhandled statement type." << std::endl;
+            exit(10);
+          }
+          state->compile(expr, function);
         }
       }
     }

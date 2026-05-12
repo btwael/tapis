@@ -64,7 +64,7 @@ namespace hcvc {
   }
 
   void Printer::visit(std::shared_ptr<IntegerLiteral> term) {
-    long val = std::stol(term->value());
+    long long val = std::stoll(term->value());
     if(val < 0) {
       return _return("(- " + std::to_string(-val) + ")");
     }
